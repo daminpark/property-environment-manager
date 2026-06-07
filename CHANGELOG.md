@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Improves public portfolio documentation, privacy notes, and architecture notes.
+- Adds synthetic demo artifacts, CI checks, and reproducible dev dependencies.
+- Keeps demo-safe examples separate from real runtime defaults.
+
 ## 0.1.0
 
 - Initial combined Home Assistant add-on.

@@ -1,19 +1,77 @@
 # Property Environment Manager
 
-Property Environment Manager is a Home Assistant add-on for property-scale
-environmental automation. It combines two observer-first controllers:
+[![Checks](https://github.com/daminpark/property-environment-manager/actions/workflows/checks.yml/badge.svg)](https://github.com/daminpark/property-environment-manager/actions/workflows/checks.yml)
 
-- ventilation control for bathroom, toilet, and kitchen humidity events;
-- TRV heating policy observation for guest rooms, service rooms, and a drying room.
+Observer-first Home Assistant add-on for humidity ventilation and TRV heating
+policy.
 
-The add-on is designed for staged deployment. It publishes diagnostics and writes
-structured SQLite logs before any device writes are enabled. Active control is
-split by subsystem, and TRV calendar-policy writes have a separate explicit gate.
+This is a practical property-operations automation project: it watches humidity,
+heating, calendar, and room-state signals, explains what it would do, and only
+touches real devices after explicit active-control gates are enabled. I built it
+to replace fragile one-off automations with something observable, staged, and
+reviewable before trusting it with physical controls.
 
-## Design
+## What It Does
 
-The repository keeps the proven controller modules independent and runs them
-under one add-on process:
+- Detects bathroom, toilet, and kitchen humidity events using absolute humidity,
+  learned baselines, rise rates, stale-sensor checks, and minimum run-time rules.
+- Observes TRV heating behaviour for guest rooms, service rooms, and a drying
+  room, including suspected open windows, ineffective heating, child-lock drift,
+  force-heat recovery, and drying-room humidity boosts.
+- Mirrors calendar-based heating policy in observer mode before calendar writes
+  are allowed.
+- Publishes Home Assistant diagnostic entities, a read-only ingress dashboard,
+  and JSON status APIs for review.
+- Writes local SQLite event, sample, and daily-summary logs so rollout decisions
+  can be based on observed behaviour rather than a single incident.
+- Includes migration and sanitisation tools for carrying forward old observer
+  logs without publishing raw private data.
+
+## Current Status
+
+This is a personal, working add-on rather than a packaged commercial product.
+The combined add-on is at `0.1.0`; the two controller modules came from earlier
+standalone add-ons and are intentionally still easy to review independently.
+
+Default installation is observer-only:
+
+- `vent_active_control: false`
+- `trv_active_control: false`
+- `trv_active_calendar_policy: false`
+
+Ventilation writes require `vent_active_control: true`. TRV drying-room writes
+require `trv_active_control: true`. Calendar, guest-limit, service-default,
+force-heat, and child-lock writes require both `trv_active_control: true` and
+`trv_active_calendar_policy: true`.
+
+## Demo
+
+The demo artifacts are synthetic and redacted. They are meant to show the shape
+of the diagnostics without exposing a real property, booking, token, or Home
+Assistant entity namespace.
+
+![Synthetic dashboard screenshot](demo/dashboard-synthetic.jpg)
+
+- [Synthetic status payload](demo/status.json)
+- [Architecture note](docs/architecture.md)
+- [Privacy and safety note](docs/privacy-and-safety.md)
+
+## Quick Review Path
+
+For a fast read, start here:
+
+1. Read this first screen and the safety model above.
+2. Skim [docs/architecture.md](docs/architecture.md) for the data flow and
+   active-control gates.
+3. Inspect `property_environment_manager/src/ventilation_manager/controller.py`
+   and `property_environment_manager/src/trv_regulator/controller.py` for the
+   decision state machines.
+4. Check `tests/` for the humidity, TRV, calendar-policy, event-store, migration,
+   and sanitisation cases.
+5. Review [docs/privacy-and-safety.md](docs/privacy-and-safety.md) before looking
+   at any logs or examples.
+
+## Repository Shape
 
 ```text
 property_environment_manager/
@@ -25,36 +83,37 @@ property_environment_manager/
       web.py                  combined read-only dashboard/API
     ventilation_manager/      humidity/fan controller
     trv_regulator/            heating/TRV controller
+demo/
+  status.json                 synthetic combined API payload
+  dashboard-synthetic.jpg     screenshot generated from synthetic data
+docs/
+  architecture.md
+  privacy-and-safety.md
 tools/
   migrate_legacy_logs.py      imports old observer SQLite logs
   sanitize_sqlite.py          creates redacted SQLite copies
 tests/
 ```
 
-The combined runner deliberately avoids merging the controller internals. That
-keeps the first unified add-on easy to review: each subsystem keeps its own
-configuration, runtime state, database, tests, and active-control switch.
+The combined runner deliberately avoids merging the controller internals. Each
+subsystem keeps its own configuration, runtime state, database, tests, and
+active-control switch, while the add-on process coordinates them under one
+dashboard.
 
-## Safety Model
+## Development
 
-Default installation is observer-only:
+From the repository root:
 
-- `vent_active_control: false`
-- `trv_active_control: false`
-- `trv_active_calendar_policy: false`
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install -e "property_environment_manager[dev]"
+python3 -m pytest -q
+python3 -m compileall -q property_environment_manager/src tests tools
+```
 
-Ventilation writes require `vent_active_control: true`.
-
-TRV drying-room writes require `trv_active_control: true`.
-
-TRV calendar, guest-limit, service-default, force-heat, and child-lock writes
-require both:
-
-- `trv_active_control: true`
-- `trv_active_calendar_policy: true`
-
-This means calendar-policy parity can be observed and reviewed without granting
-the add-on broad heating authority.
+The project targets Python 3.12+ because the Home Assistant add-on image uses
+Python 3.12.
 
 ## Diagnostics
 
@@ -71,52 +130,48 @@ Each controller records local SQLite diagnostics under `/data`:
 - `/data/trv_regulator_events.sqlite3`
 
 Raw samples are retained for short-term analysis. Event and daily-summary rows
-are retained longer so rollout decisions can be based on observed behavior
-rather than one-off incidents.
+are retained longer so staged rollout decisions can be reviewed over time.
 
-## Legacy Log Migration
+## Data Hygiene
 
 Do not commit raw production databases. To preserve history from the old
 standalone add-ons, copy the old SQLite files to a local working directory or to
 `/share`, then import them into the new database files:
 
 ```bash
-python tools/migrate_legacy_logs.py \
+python3 tools/migrate_legacy_logs.py \
   --source old_ventilation_manager_events.sqlite3 \
   --destination new_ventilation_manager_events.sqlite3
 
-python tools/migrate_legacy_logs.py \
+python3 tools/migrate_legacy_logs.py \
   --source old_trv_regulator_events.sqlite3 \
   --destination new_trv_regulator_events.sqlite3
 ```
 
-The importer deduplicates event and sample rows by content. Daily summaries are
-upserted by day and zone.
-
-## Sanitized Data
-
 For public examples or external review, create redacted copies:
 
 ```bash
-python tools/sanitize_sqlite.py \
+python3 tools/sanitize_sqlite.py \
   --source ventilation_manager_events.sqlite3 \
   --destination sanitized_ventilation.sqlite3
 ```
 
-The sanitizer removes or generalizes common private fields such as booking
+The sanitizer removes or generalises common private fields such as booking
 summaries, guest names, bearer tokens, IP addresses, and house-specific entity
 prefixes. Sanitized output should still be reviewed before publishing.
 
-## Development
+## Agent-Assisted Workflow
 
-Run tests from the repository root:
+I use coding agents as part of the workflow for review, refactoring pressure
+tests, documentation passes, and checklist-style verification. The product
+boundaries, safety model, staged rollout, and final architecture decisions remain
+mine. In this repo, the important signal is not "AI built it"; it is that the
+automation is observable enough for humans and agents to inspect before it is
+trusted.
 
-```bash
-PYTHONPATH=property_environment_manager/src python -m pytest -q
-```
+## Public Boundary
 
-Build validation:
-
-```bash
-PYTHONPATH=property_environment_manager/src python -m compileall -q property_environment_manager/src tests tools
-```
+Some tests and sanitisation rules refer to legacy numeric house/entity patterns
+because the add-on was extracted from a real deployment. The demo artifacts use
+a synthetic namespace, and any real logs should be sanitised and manually
+reviewed before sharing.

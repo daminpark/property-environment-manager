@@ -1,0 +1,166 @@
+{
+  "app": "property_environment_manager",
+  "controllers": {
+    "trv": {
+      "active_calendar_policy": false,
+      "active_control": false,
+      "app": "trv_regulator",
+      "boiler_entity": "switch.demo_boiler",
+      "boiler_on": false,
+      "boiler_policy_action": "none",
+      "boiler_should_be_on": false,
+      "calendar_policy_enabled": true,
+      "daily_summaries": [
+        {
+          "day": "2026-06-07",
+          "metrics": {
+            "calendar_policy_observations": 12,
+            "drying_boost_recommendations": 1,
+            "hard_safety_blockers": 0,
+            "observations": 12,
+            "safe_drying_boost_candidates": 1,
+            "unsafe_write_blockers": 0,
+            "would_be_worse_than_current_system": 0,
+            "would_improve_current_system": 1
+          },
+          "updated_at": "2026-06-07T12:00:00+00:00",
+          "zone_id": "z"
+        }
+      ],
+      "house_code": "demo",
+      "last_run_at": "2026-06-07T12:00:00+00:00",
+      "recent_events": [],
+      "zones": [
+        {
+          "absolute_humidity_gm3": 13.7,
+          "absolute_humidity_rate_gm3_per_min": 0.01,
+          "active_control": false,
+          "boiler_on": false,
+          "calendar_policy_action": null,
+          "calendar_policy_active_booking": null,
+          "calendar_policy_entity_id": null,
+          "calendar_policy_event_summary": null,
+          "calendar_policy_reason": null,
+          "calendar_policy_state": null,
+          "calendar_policy_suppressed_by_renovation": null,
+          "calendar_policy_target_temperature_c": null,
+          "child_lock_age_seconds": 16,
+          "child_lock_on": true,
+          "climate_available": true,
+          "heating_ineffective": false,
+          "heating_response_c": null,
+          "humidity_sample_age_minutes": 1.5,
+          "hvac_action": "idle",
+          "hvac_mode": "heat",
+          "mode": "drying_elevated",
+          "reason": "elevated drying moisture 13.70 g/m3 is not falling fast enough; rate 0.010 g/m3/min",
+          "relative_humidity_percent": 67.1,
+          "room_sample_age_minutes": 1.5,
+          "room_temperature_c": 21.8,
+          "room_temperature_rate_c_per_hour": 0.05,
+          "sensor_stale": false,
+          "suggested_action": "would_raise_drying_target",
+          "suggested_target_temperature_c": 25,
+          "target_temperature_c": 24,
+          "trv_current_temperature_c": 21.8,
+          "window_open_risk": false,
+          "zone_id": "z"
+        },
+        {
+          "absolute_humidity_gm3": null,
+          "absolute_humidity_rate_gm3_per_min": null,
+          "active_control": false,
+          "boiler_on": false,
+          "calendar_policy_action": "none",
+          "calendar_policy_active_booking": true,
+          "calendar_policy_entity_id": "calendar.demo_1_calendar",
+          "calendar_policy_event_summary": "[redacted]",
+          "calendar_policy_reason": "calendar.demo_1_calendar is active; guest target changes within 14-24C remain allowed",
+          "calendar_policy_state": "calendar_occupied",
+          "calendar_policy_suppressed_by_renovation": false,
+          "calendar_policy_target_temperature_c": 18,
+          "child_lock_age_seconds": 12,
+          "child_lock_on": true,
+          "climate_available": true,
+          "heating_ineffective": false,
+          "heating_response_c": 0.3,
+          "humidity_sample_age_minutes": null,
+          "hvac_action": "idle",
+          "hvac_mode": "heat",
+          "mode": "idle",
+          "reason": "calendar.demo_1_calendar is active; guest target changes within 14-24C remain allowed",
+          "relative_humidity_percent": null,
+          "room_sample_age_minutes": 2,
+          "room_temperature_c": 20.1,
+          "room_temperature_rate_c_per_hour": 0.1,
+          "sensor_stale": false,
+          "suggested_action": "none",
+          "suggested_target_temperature_c": 18,
+          "target_temperature_c": 18,
+          "trv_current_temperature_c": 20.1,
+          "window_open_risk": false,
+          "zone_id": "1"
+        }
+      ]
+    },
+    "ventilation": {
+      "active_control": false,
+      "app": "ventilation_manager",
+      "daily_summaries": [
+        {
+          "day": "2026-06-07",
+          "metrics": {
+            "dangerous_miss_candidates": 0,
+            "fan_state_mismatches": 1,
+            "hard_safety_blockers": 0,
+            "observations": 12,
+            "should_run_fan_off": 1,
+            "would_be_worse_than_current_system": 0,
+            "would_improve_current_system": 1
+          },
+          "updated_at": "2026-06-07T12:00:00+00:00",
+          "zone_id": "a"
+        }
+      ],
+      "house_code": "demo",
+      "last_run_at": "2026-06-07T12:00:00+00:00",
+      "recent_events": [],
+      "zones": [
+        {
+          "absolute_humidity": 12.4,
+          "baseline_absolute_humidity": 10.8,
+          "command": "turn_on",
+          "delta_absolute_humidity": 1.6,
+          "event_baseline_absolute_humidity": 10.8,
+          "fan_on": false,
+          "fan_state_mismatch": true,
+          "mode": "moisture_rising",
+          "rate_gm3_per_min": 0.12,
+          "reason": "moisture event started: delta 1.60 g/m3 above baseline, rate 0.120 g/m3/min, RH 71.0%",
+          "relative_humidity": 71,
+          "sample_age_minutes": 1,
+          "sensor_stale": false,
+          "should_run": true,
+          "zone_id": "a"
+        },
+        {
+          "absolute_humidity": 9.9,
+          "baseline_absolute_humidity": 10.1,
+          "command": "none",
+          "delta_absolute_humidity": -0.2,
+          "event_baseline_absolute_humidity": null,
+          "fan_on": false,
+          "fan_state_mismatch": false,
+          "mode": "idle",
+          "rate_gm3_per_min": -0.01,
+          "reason": "idle; no moisture event",
+          "relative_humidity": 52,
+          "sample_age_minutes": 2,
+          "sensor_stale": false,
+          "should_run": false,
+          "zone_id": "k"
+        }
+      ]
+    }
+  }
+}

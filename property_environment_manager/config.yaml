@@ -1,5 +1,5 @@
 name: "Property Environment Manager"
-description: "Observer-first environmental automation for ventilation and TRV heating"
+description: "Observer-first Home Assistant add-on for humidity ventilation and TRV heating policy"
 version: "0.1.0"
 init: false
 slug: "property_environment_manager"
