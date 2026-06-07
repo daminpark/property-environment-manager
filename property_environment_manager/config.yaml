@@ -1,0 +1,112 @@
+name: "Property Environment Manager"
+description: "Observer-first environmental automation for ventilation and TRV heating"
+version: "0.1.0"
+init: false
+slug: "property_environment_manager"
+url: "https://github.com/daminpark/property-environment-manager"
+arch:
+  - amd64
+  - aarch64
+homeassistant_api: true
+ingress: true
+ingress_port: 8097
+map:
+  - share:rw
+panel_icon: "mdi:home-thermometer"
+panel_title: "Environment Manager"
+options:
+  house_code: "195"
+  ventilation_enabled: true
+  trv_enabled: true
+  web_port: 8097
+  vent_zone_ids: "a,b,c,k"
+  vent_change_only_zone_ids: ""
+  vent_active_control: false
+  vent_poll_interval_seconds: 30
+  vent_baseline_window_minutes: 90
+  vent_baseline_margin_gm3: 0.8
+  vent_rise_delta_threshold_gm3: 1.0
+  vent_rise_rate_threshold_gm3_per_min: 0.08
+  vent_stable_rate_gm3_per_min: 0.03
+  vent_high_rh_guard_percent: 75
+  vent_sensor_stale_minutes: 30
+  vent_min_runtime_minutes: 20
+  vent_max_runtime_minutes: 180
+  trv_zone_ids: "0,1,2,3,4,5,6,a,b,c,k,z"
+  trv_active_control: false
+  trv_poll_interval_seconds: 60
+  trv_base_drying_target_c: 24
+  trv_elevated_drying_target_c: 25
+  trv_severe_drying_target_c: 26
+  trv_drying_elevated_absolute_humidity_gm3: 13.0
+  trv_drying_severe_absolute_humidity_gm3: 16.0
+  trv_drying_recovered_absolute_humidity_gm3: 12.2
+  trv_drying_falling_rate_gm3_per_min: -0.03
+  trv_heating_response_window_minutes: 30
+  trv_heating_min_expected_rise_c: 0.2
+  trv_window_drop_rate_c_per_hour: -1.0
+  trv_sensor_stale_minutes: 45
+  trv_calendar_policy_enabled: true
+  trv_active_calendar_policy: false
+  trv_local_timezone: "Europe/London"
+  trv_calendar_lookbehind_days: 2
+  trv_calendar_lookahead_days: 14
+  trv_calendar_trigger_tolerance_minutes: 2
+  trv_calendar_checkin_target_c: 18
+  trv_calendar_checkout_target_c: 14
+  trv_guest_min_target_c: 14
+  trv_guest_max_target_c: 24
+  trv_guest_limit_delay_minutes: 60
+  trv_service_bathroom_target_c: 20
+  trv_service_kitchen_target_c: 18
+  trv_service_revert_delay_minutes: 240
+  trv_force_heat_delay_minutes: 5
+  trv_child_lock_delay_seconds: 30
+schema:
+  house_code: str
+  ventilation_enabled: bool
+  trv_enabled: bool
+  web_port: int
+  vent_zone_ids: str
+  vent_change_only_zone_ids: str
+  vent_active_control: bool
+  vent_poll_interval_seconds: int
+  vent_baseline_window_minutes: int
+  vent_baseline_margin_gm3: float
+  vent_rise_delta_threshold_gm3: float
+  vent_rise_rate_threshold_gm3_per_min: float
+  vent_stable_rate_gm3_per_min: float
+  vent_high_rh_guard_percent: float
+  vent_sensor_stale_minutes: int
+  vent_min_runtime_minutes: int
+  vent_max_runtime_minutes: int
+  trv_zone_ids: str
+  trv_active_control: bool
+  trv_poll_interval_seconds: int
+  trv_base_drying_target_c: float
+  trv_elevated_drying_target_c: float
+  trv_severe_drying_target_c: float
+  trv_drying_elevated_absolute_humidity_gm3: float
+  trv_drying_severe_absolute_humidity_gm3: float
+  trv_drying_recovered_absolute_humidity_gm3: float
+  trv_drying_falling_rate_gm3_per_min: float
+  trv_heating_response_window_minutes: int
+  trv_heating_min_expected_rise_c: float
+  trv_window_drop_rate_c_per_hour: float
+  trv_sensor_stale_minutes: int
+  trv_calendar_policy_enabled: bool
+  trv_active_calendar_policy: bool
+  trv_local_timezone: str
+  trv_calendar_lookbehind_days: int
+  trv_calendar_lookahead_days: int
+  trv_calendar_trigger_tolerance_minutes: int
+  trv_calendar_checkin_target_c: float
+  trv_calendar_checkout_target_c: float
+  trv_guest_min_target_c: float
+  trv_guest_max_target_c: float
+  trv_guest_limit_delay_minutes: int
+  trv_service_bathroom_target_c: float
+  trv_service_kitchen_target_c: float
+  trv_service_revert_delay_minutes: int
+  trv_force_heat_delay_minutes: int
+  trv_child_lock_delay_seconds: int
