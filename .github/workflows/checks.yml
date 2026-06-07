@@ -1,0 +1,23 @@
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e "property_environment_manager[dev]"
+      - name: Tests
+        run: python3 -m pytest -q
+      - name: Compile
+        run: python3 -m compileall -q property_environment_manager/src tests tools
