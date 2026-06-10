@@ -7,10 +7,15 @@ import argparse
 import json
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any
 
-from tools.migrate_legacy_logs import ensure_schema, table_exists
+try:
+    from tools.migrate_legacy_logs import ensure_schema, table_exists
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from tools.migrate_legacy_logs import ensure_schema, table_exists
 
 
 SENSITIVE_KEYS = {
