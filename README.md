@@ -161,6 +161,18 @@ python3 tools/migrate_legacy_logs.py \
   --destination new_trv_regulator_events.sqlite3
 ```
 
+For an add-on migration, place the exported legacy files under
+`/share/property_environment_manager` using these names before first start:
+
+- `legacy_ventilation_manager_events.sqlite3`
+- `legacy_ventilation_manager_state.json`
+- `legacy_trv_regulator_events.sqlite3`
+- `legacy_trv_regulator_state.json`
+
+The combined add-on uses SQLite's online backup API to create consistent `/data`
+copies, runs `integrity_check`, and records one-time import markers. It refuses
+to overwrite a database that the combined add-on has already created.
+
 For public examples or external review, create redacted copies:
 
 ```bash

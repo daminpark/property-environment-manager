@@ -9,6 +9,7 @@ import signal
 from collections.abc import Callable
 from typing import Any
 
+from property_environment_manager.bootstrap import bootstrap_legacy_data
 from property_environment_manager.web import DashboardServer
 from trv_regulator.config import load_settings as load_trv_settings
 from trv_regulator.controller import TRVRegulator
@@ -119,6 +120,9 @@ async def main() -> None:
 
     ventilation_enabled = _env_bool("PEM_VENTILATION_ENABLED", True)
     trv_enabled = _env_bool("PEM_TRV_ENABLED", True)
+
+    for controller_name, result in bootstrap_legacy_data().items():
+        LOGGER.info("Legacy %s data: %s", controller_name, result)
 
     ventilation = (
         VentilationController(load_ventilation_settings())

@@ -3,6 +3,8 @@
 export PEM_VENTILATION_ENABLED="$(bashio::config 'ventilation_enabled')"
 export PEM_TRV_ENABLED="$(bashio::config 'trv_enabled')"
 export PEM_WEB_PORT="$(bashio::config 'web_port')"
+export PEM_LEGACY_DATA_DIR="/share/property_environment_manager"
+export PEM_DATA_DIR="/data"
 
 export VENT_HOUSE_CODE="$(bashio::config 'house_code')"
 export VENT_ZONE_IDS="$(bashio::config 'vent_zone_ids')"

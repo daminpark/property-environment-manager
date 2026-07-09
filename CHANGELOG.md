@@ -14,6 +14,9 @@
 - Removes the obsolete ventilation maximum-runtime option.
 - Documents staged ownership of legacy presence, button, air-out, drying-room,
   renovation, and calendar routines.
+- Imports legacy standalone SQLite databases transactionally on first start,
+  validates them, and carries over controller runtime state without overwriting
+  existing combined data.
 
 ## Unreleased
 
