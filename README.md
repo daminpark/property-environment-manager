@@ -37,12 +37,20 @@ Default installation is observer-only:
 
 - `vent_active_control: false`
 - `trv_active_control: false`
+- `trv_active_boiler_control: false`
 - `trv_active_calendar_policy: false`
 
 Ventilation writes require `vent_active_control: true`. TRV drying-room writes
 require `trv_active_control: true`. Calendar, guest-limit, service-default,
 force-heat, and child-lock writes require both `trv_active_control: true` and
-`trv_active_calendar_policy: true`.
+`trv_active_calendar_policy: true`. Boiler writes require both
+`trv_active_control: true` and the independent
+`trv_active_boiler_control: true` gate.
+
+The current ventilation control scope is humidity only. Presence, button,
+evening-air-out, and drying-room routines remain Home Assistant-owned during the
+first staged cutover. The dashboard reports these ownership requirements rather
+than claiming full replacement readiness.
 
 ## Demo
 
@@ -131,6 +139,11 @@ Each controller records local SQLite diagnostics under `/data`:
 
 Raw samples are retained for short-term analysis. Event and daily-summary rows
 are retained longer so staged rollout decisions can be reviewed over time.
+
+The TRV status includes one aggregate boiler decision every poll. A known
+heating demand can recommend turning the boiler on, but turning it off is only
+considered safe when the boiler and every configured TRV report usable state.
+All future device commands use state read-back and bounded retries.
 
 ## Data Hygiene
 

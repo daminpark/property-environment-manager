@@ -1,6 +1,6 @@
 name: "Property Environment Manager"
 description: "Observer-first Home Assistant add-on for humidity ventilation and TRV heating policy"
-version: "0.1.0"
+version: "0.2.0"
 init: false
 slug: "property_environment_manager"
 url: "https://github.com/daminpark/property-environment-manager"
@@ -31,9 +31,9 @@ options:
   vent_high_rh_guard_percent: 75
   vent_sensor_stale_minutes: 30
   vent_min_runtime_minutes: 20
-  vent_max_runtime_minutes: 180
   trv_zone_ids: "0,1,2,3,4,5,6,a,b,c,k,z"
   trv_active_control: false
+  trv_active_boiler_control: false
   trv_poll_interval_seconds: 60
   trv_base_drying_target_c: 24
   trv_elevated_drying_target_c: 25
@@ -79,9 +79,9 @@ schema:
   vent_high_rh_guard_percent: float
   vent_sensor_stale_minutes: int
   vent_min_runtime_minutes: int
-  vent_max_runtime_minutes: int
   trv_zone_ids: str
   trv_active_control: bool
+  trv_active_boiler_control: bool
   trv_poll_interval_seconds: int
   trv_base_drying_target_c: float
   trv_elevated_drying_target_c: float

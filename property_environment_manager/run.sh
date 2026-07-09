@@ -17,7 +17,6 @@ export VENT_STABLE_RATE_GM3_PER_MIN="$(bashio::config 'vent_stable_rate_gm3_per_
 export VENT_HIGH_RH_GUARD_PERCENT="$(bashio::config 'vent_high_rh_guard_percent')"
 export VENT_SENSOR_STALE_MINUTES="$(bashio::config 'vent_sensor_stale_minutes')"
 export VENT_MIN_RUNTIME_MINUTES="$(bashio::config 'vent_min_runtime_minutes')"
-export VENT_MAX_RUNTIME_MINUTES="$(bashio::config 'vent_max_runtime_minutes')"
 export VENT_WEB_PORT="${PEM_WEB_PORT}"
 export VENT_HA_URL="http://supervisor/core"
 export VENT_HA_TOKEN="${SUPERVISOR_TOKEN}"
@@ -27,6 +26,7 @@ export VENT_DATABASE_PATH="/data/ventilation_manager_events.sqlite3"
 export TRV_HOUSE_CODE="$(bashio::config 'house_code')"
 export TRV_ZONE_IDS="$(bashio::config 'trv_zone_ids')"
 export TRV_ACTIVE_CONTROL="$(bashio::config 'trv_active_control')"
+export TRV_ACTIVE_BOILER_CONTROL="$(bashio::config 'trv_active_boiler_control')"
 export TRV_POLL_INTERVAL_SECONDS="$(bashio::config 'trv_poll_interval_seconds')"
 export TRV_BASE_DRYING_TARGET_C="$(bashio::config 'trv_base_drying_target_c')"
 export TRV_ELEVATED_DRYING_TARGET_C="$(bashio::config 'trv_elevated_drying_target_c')"
@@ -63,6 +63,6 @@ export TRV_DATABASE_PATH="/data/trv_regulator_events.sqlite3"
 
 bashio::log.info "Starting Property Environment Manager for house ${VENT_HOUSE_CODE}"
 bashio::log.info "Ventilation enabled=${PEM_VENTILATION_ENABLED}; active_control=${VENT_ACTIVE_CONTROL}"
-bashio::log.info "TRV enabled=${PEM_TRV_ENABLED}; active_control=${TRV_ACTIVE_CONTROL}; active_calendar_policy=${TRV_ACTIVE_CALENDAR_POLICY}"
+bashio::log.info "TRV enabled=${PEM_TRV_ENABLED}; active_control=${TRV_ACTIVE_CONTROL}; active_boiler_control=${TRV_ACTIVE_BOILER_CONTROL}; active_calendar_policy=${TRV_ACTIVE_CALENDAR_POLICY}"
 
 exec python -m property_environment_manager.main

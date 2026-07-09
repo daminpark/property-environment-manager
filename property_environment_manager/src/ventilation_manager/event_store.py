@@ -161,6 +161,7 @@ class EventStore:
         mode = str(payload.get("mode", "unknown"))
         should_run = bool(payload.get("should_run"))
         fan_on = bool(payload.get("fan_on"))
+        fan_available = bool(payload.get("fan_available", True))
         fan_mismatch = bool(payload.get("fan_state_mismatch"))
         sensor_stale = bool(payload.get("sensor_stale"))
         delta_absolute_humidity = self._float(payload.get("delta_absolute_humidity"))
@@ -179,10 +180,12 @@ class EventStore:
         would_improve_current = should_run and not fan_on and real_humidity_event
         would_be_worse_than_current = fan_on and not should_run and real_humidity_event
         dangerous_miss = not should_run and not fan_on and real_humidity_event
+        hard_blocker = sensor_stale or not fan_available
         metrics: dict[str, Any] = {
             "observations": 1,
             "should_run_observations": 1 if should_run else 0,
             "fan_on_observations": 1 if fan_on else 0,
+            "fan_unavailable_observations": 0 if fan_available else 1,
             "fan_state_mismatches": 1 if fan_mismatch else 0,
             "should_run_fan_off": 1 if should_run and not fan_on else 0,
             "fan_on_should_not_run": 1 if fan_on and not should_run else 0,
@@ -194,7 +197,7 @@ class EventStore:
             "would_improve_current_system": 1 if would_improve_current else 0,
             "would_be_worse_than_current_system": 1 if would_be_worse_than_current else 0,
             "dangerous_miss_candidates": 1 if dangerous_miss else 0,
-            "hard_safety_blockers": 1 if sensor_stale else 0,
+            "hard_safety_blockers": 1 if hard_blocker else 0,
             "improvement_candidates": 1 if would_improve_current else 0,
             "false_positive_candidates": 1 if should_run and not fan_on and rate_only_low_delta else 0,
         }

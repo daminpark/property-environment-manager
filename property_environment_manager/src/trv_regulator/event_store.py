@@ -186,11 +186,14 @@ class EventStore:
             )
 
     def _summary_delta(self, zone_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if zone_id == "boiler":
+            return self._boiler_summary_delta(payload)
         mode = str(payload.get("mode", "unknown"))
         suggested_action = str(payload.get("suggested_action", "none"))
         sensor_stale = bool(payload.get("sensor_stale"))
         climate_available = bool(payload.get("climate_available"))
         boiler_on = bool(payload.get("boiler_on"))
+        boiler_available = bool(payload.get("boiler_available", True))
         window_open_risk = bool(payload.get("window_open_risk"))
         heating_ineffective = bool(payload.get("heating_ineffective"))
         target_temperature = self._float(payload.get("target_temperature_c"))
@@ -203,7 +206,7 @@ class EventStore:
         relative_humidity = self._float(payload.get("relative_humidity_percent"))
         drying_mode = mode in {"drying_watch", "drying_elevated", "drying_severe", "drying_recovered"}
         drying_boost = suggested_action == "would_raise_drying_target"
-        hard_blocker = sensor_stale or not climate_available
+        hard_blocker = sensor_stale or not climate_available or not boiler_available
         write_blocker = hard_blocker or window_open_risk or heating_ineffective
         safe_drying_boost = (
             zone_id == "z"
@@ -233,6 +236,7 @@ class EventStore:
         metrics: dict[str, Any] = {
             "observations": 1,
             "boiler_on_observations": 1 if boiler_on else 0,
+            "boiler_unavailable_observations": 0 if boiler_available else 1,
             "climate_unavailable_observations": 0 if climate_available else 1,
             "sensor_stale_observations": 1 if sensor_stale else 0,
             "window_open_risk_observations": 1 if window_open_risk else 0,
@@ -285,6 +289,28 @@ class EventStore:
         self._set_max(metrics, "max_absolute_humidity_gm3", absolute_humidity)
         self._set_max(metrics, "max_relative_humidity_percent", relative_humidity)
         return metrics
+
+    def _boiler_summary_delta(self, payload: dict[str, Any]) -> dict[str, Any]:
+        action = str(payload.get("suggested_action", "none"))
+        available = bool(payload.get("boiler_available"))
+        safe = bool(payload.get("control_safe"))
+        unavailable_zones = payload.get("unavailable_zone_ids") or []
+        return {
+            "observations": 1,
+            "boiler_unavailable_observations": 0 if available else 1,
+            "boiler_on_observations": 1 if payload.get("boiler_on") else 0,
+            "boiler_should_be_on_observations": (
+                1 if payload.get("boiler_should_be_on") else 0
+            ),
+            "boiler_state_mismatches": (
+                1 if action in {"would_turn_boiler_on", "would_turn_boiler_off"} else 0
+            ),
+            "boiler_turn_on_recommendations": 1 if action == "would_turn_boiler_on" else 0,
+            "boiler_turn_off_recommendations": 1 if action == "would_turn_boiler_off" else 0,
+            "boiler_blocked_commands": 1 if action.startswith("blocked_") else 0,
+            "trv_unavailable_observations": 1 if unavailable_zones else 0,
+            "hard_safety_blockers": 0 if available and safe else 1,
+        }
 
     def _merge_metrics(self, existing: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
         merged = dict(existing)

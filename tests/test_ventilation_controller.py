@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ventilation_manager.config import Settings, ZoneConfig
 from ventilation_manager.controller import VentilationController, ZoneSnapshot
+from ventilation_manager.ha.client import EntityState
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -30,7 +32,6 @@ def make_settings(tmp_path: Path) -> Settings:
         high_rh_guard_percent=75.0,
         sensor_stale_minutes=30,
         min_runtime_minutes=20,
-        max_runtime_minutes=180,
         ha_url="http://example.invalid",
         ha_token="token",
         state_path=tmp_path / "state.json",
@@ -62,7 +63,6 @@ def make_change_only_settings(tmp_path: Path) -> Settings:
         high_rh_guard_percent=settings.high_rh_guard_percent,
         sensor_stale_minutes=settings.sensor_stale_minutes,
         min_runtime_minutes=settings.min_runtime_minutes,
-        max_runtime_minutes=settings.max_runtime_minutes,
         ha_url=settings.ha_url,
         ha_token=settings.ha_token,
         state_path=tmp_path / "change_only_state.json",
@@ -75,6 +75,7 @@ def snapshot(settings: Settings, now: datetime, **kwargs: object) -> ZoneSnapsho
         zone=settings.zones[0],
         now=now,
         fan_on=bool(kwargs.get("fan_on", False)),
+        fan_available=bool(kwargs.get("fan_available", True)),
         relative_humidity=float(kwargs["rh"]),
         temperature_c=22.0,
         absolute_humidity=float(kwargs["abs_h"]),
@@ -179,8 +180,97 @@ def test_clears_persisted_drying_state_if_fan_is_off_and_room_is_near_baseline(
         snapshot(settings, now + timedelta(minutes=5), rh=58, abs_h=11.4)
     )
 
+    assert decision.should_run is True
+    assert decision.command == "keep_on"
+
+
+def test_observer_minimum_runtime_does_not_depend_on_physical_fan_state(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=52, abs_h=10.0))
+    controller.evaluate(
+        snapshot(settings, now + timedelta(minutes=2), rh=70, abs_h=11.5)
+    )
+    early = controller.evaluate(
+        snapshot(settings, now + timedelta(minutes=5), rh=55, abs_h=10.4)
+    )
+    finished = controller.evaluate(
+        snapshot(settings, now + timedelta(minutes=23), rh=55, abs_h=10.4)
+    )
+
+    assert early.should_run is True
+    assert early.command == "keep_on"
+    assert finished.should_run is False
+    assert finished.command == "turn_off"
+
+
+def test_rate_only_spike_requires_meaningful_delta_from_baseline(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=52, abs_h=10.0))
+    decision = controller.evaluate(
+        snapshot(settings, now + timedelta(minutes=1), rh=53, abs_h=10.2)
+    )
+
+    assert decision.rate_gm3_per_min is not None
+    assert decision.rate_gm3_per_min > settings.rise_rate_threshold_gm3_per_min
     assert decision.should_run is False
-    assert decision.command == "turn_off"
+
+
+def test_unavailable_fan_is_a_write_blocker_not_a_state_mismatch(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime(2026, 5, 28, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=52, abs_h=10.0))
+    decision = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=4),
+            rh=70,
+            abs_h=11.6,
+            fan_available=False,
+        )
+    )
+
+    assert decision.should_run is True
+    assert decision.fan_available is False
+    assert decision.fan_state_mismatch is False
+    assert decision.write_blocked is True
+
+
+def test_change_only_sensor_freshness_uses_source_humidity_timestamp(
+    tmp_path: Path,
+) -> None:
+    settings = make_change_only_settings(tmp_path)
+    controller = VentilationController(settings)
+    zone = settings.zones[0]
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    old = (now - timedelta(minutes=45)).isoformat()
+    fresh = now.isoformat()
+    states = {
+        zone.fan_entity: EntityState(zone.fan_entity, "off", {}, fresh, fresh),
+        zone.humidity_entity: EntityState(
+            zone.humidity_entity, "72", {}, old, old
+        ),
+        zone.temperature_entity: EntityState(
+            zone.temperature_entity, "22", {}, fresh, fresh
+        ),
+        zone.absolute_humidity_entity: EntityState(
+            zone.absolute_humidity_entity, "14", {}, fresh, fresh
+        ),
+    }
+
+    observed = controller._snapshot(zone, states, now)
+
+    assert observed.sample_ts == datetime.fromisoformat(old)
+    assert now - observed.sample_ts > timedelta(minutes=settings.sensor_stale_minutes)
 
 
 def test_stale_sensor_does_not_start_from_old_high_reading(tmp_path: Path) -> None:
@@ -241,7 +331,7 @@ def test_change_only_high_stale_reading_runs_conservatively(tmp_path: Path) -> N
 
 
 
-def test_does_not_turn_off_due_to_max_runtime_while_still_humid(tmp_path: Path) -> None:
+def test_does_not_turn_off_just_because_event_has_run_for_hours(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     controller = VentilationController(settings)
     now = datetime(2026, 6, 2, 10, 0, tzinfo=UTC)
@@ -251,7 +341,7 @@ def test_does_not_turn_off_due_to_max_runtime_while_still_humid(tmp_path: Path) 
     decision = controller.evaluate(
         snapshot(
             settings,
-            now + timedelta(minutes=settings.max_runtime_minutes + 30),
+            now + timedelta(hours=8),
             rh=78,
             abs_h=12.1,
             fan_on=True,
@@ -261,4 +351,50 @@ def test_does_not_turn_off_due_to_max_runtime_while_still_humid(tmp_path: Path) 
     assert decision.mode == "drying"
     assert decision.should_run is True
     assert decision.command == "keep_on"
-    assert "max runtime" not in decision.reason
+
+
+def test_observer_run_publishes_diagnostics_without_device_writes(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime.now(UTC).isoformat()
+
+    class FakeHomeAssistant:
+        def __init__(self) -> None:
+            self.published: list[tuple[str, object, dict[str, object]]] = []
+
+        async def get_states(self) -> dict[str, EntityState]:
+            zone = settings.zones[0]
+            return {
+                zone.fan_entity: EntityState(
+                    zone.fan_entity, "off", {}, now, now
+                ),
+                zone.humidity_entity: EntityState(
+                    zone.humidity_entity, "52", {}, now, now
+                ),
+                zone.temperature_entity: EntityState(
+                    zone.temperature_entity, "22", {}, now, now
+                ),
+                zone.absolute_humidity_entity: EntityState(
+                    zone.absolute_humidity_entity, "10", {}, now, now
+                ),
+            }
+
+        async def set_state(
+            self, entity_id: str, state: object, attributes: dict[str, object]
+        ) -> None:
+            self.published.append((entity_id, state, attributes))
+
+        async def set_switch_state_verified(self, *_: object, **__: object) -> None:
+            raise AssertionError("observer mode attempted a fan write")
+
+    fake = FakeHomeAssistant()
+    decisions = asyncio.run(controller.run_once(fake))  # type: ignore[arg-type]
+
+    assert len(decisions) == 1
+    assert decisions[0].fan_available is True
+    assert len(fake.published) == 8
+    assert (
+        f"sensor.{settings.house_code}_ventilation_manager_health"
+        in {item[0] for item in fake.published}
+    )
+    assert all(item[2]["active_control"] is False for item in fake.published)

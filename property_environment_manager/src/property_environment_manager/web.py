@@ -148,40 +148,54 @@ h2 { margin:22px 0 10px; font-size:18px; }
 <section id="content"></section>
 </main>
 <script>
+const esc = (v) => String(v ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
 const fmt = (v, suffix='') => v === null || v === undefined ? 'unknown' : `${v}${suffix}`;
 const bool = (v) => v ? 'yes' : 'no';
-const pill = (text, tone='') => `<span class="pill ${tone}">${text}</span>`;
-const metric = (k, v, tone='') => `<div class="metric"><span class="key">${k}</span><span class="value ${tone}">${v}</span></div>`;
+const pill = (text, tone='') => `<span class="pill ${tone}">${esc(text)}</span>`;
+const metric = (k, v, tone='') => `<div class="metric"><span class="key">${esc(k)}</span><span class="value ${tone}">${esc(v)}</span></div>`;
 function renderVentilation(data) {
   if (!data || !data.zones) return '';
-  const mismatches = data.zones.filter(z => z.fan_state_mismatch).length;
-  const stale = data.zones.filter(z => z.sensor_stale).length;
-  return `<h2>Ventilation · ${data.house_code}</h2><div class="grid">${data.zones.map(z => {
-    const tone = z.sensor_stale || z.fan_state_mismatch ? 'bad' : z.should_run ? 'warn' : 'good';
-    return `<article class="card"><h3>${z.zone_id.toUpperCase()} <span class="${tone}">${z.mode}</span></h3>${[
+  const healthTone = data.active_control_ready_now ? 'good' : 'bad';
+  const summary = `<div class="status">${pill(data.active_control_ready_now ? 'ready now' : 'blocked now', healthTone)}${pill(data.control_scope || 'humidity only', 'accent')}</div>`;
+  return `<h2>Ventilation · ${esc(data.house_code)}</h2>${summary}<div class="grid">${data.zones.map(z => {
+    const tone = !z.fan_available || z.sensor_stale || z.fan_state_mismatch ? 'bad' : z.should_run ? 'warn' : 'good';
+    return `<article class="card"><h3>${esc(z.zone_id.toUpperCase())} <span class="${tone}">${esc(z.mode)}</span></h3>${[
       metric('would run', bool(z.should_run), z.should_run ? 'warn' : 'good'),
       metric('actual fan', z.fan_on ? 'on' : 'off'),
+      metric('fan available', bool(z.fan_available), z.fan_available ? 'good' : 'bad'),
       metric('abs humidity', fmt(z.absolute_humidity, ' g/m3')),
       metric('delta', fmt(z.delta_absolute_humidity, ' g/m3')),
       metric('rate', fmt(z.rate_gm3_per_min, ' g/m3/min')),
       metric('stale', bool(z.sensor_stale), z.sensor_stale ? 'bad' : 'good')
-    ].join('')}<div class="reason">${z.reason}</div></article>`;
+    ].join('')}<div class="reason">${esc(z.reason)}</div></article>`;
   }).join('')}</div>${renderSummaries(data.daily_summaries, 'ventilation')}`;
 }
 function renderTrv(data) {
   if (!data || !data.zones) return '';
-  return `<h2>TRV · ${data.house_code}</h2><div class="grid">${data.zones.map(z => {
-    const alert = z.window_open_risk || z.heating_ineffective || z.sensor_stale || z.suggested_action !== 'none';
+  const boiler = data.boiler_policy || {};
+  const boilerTone = !data.boiler_available || boiler.state_mismatch || !boiler.control_safe ? 'bad' : 'good';
+  const boilerCard = `<article class="card"><h3>Boiler <span class="${boilerTone}">${esc(boiler.mode || 'starting')}</span></h3>${[
+    metric('available', bool(data.boiler_available), data.boiler_available ? 'good' : 'bad'),
+    metric('actual', data.boiler_on ? 'on' : 'off'),
+    metric('should be', data.boiler_should_be_on ? 'on' : 'off'),
+    metric('action', data.boiler_policy_action || 'none', boiler.state_mismatch ? 'warn' : 'good'),
+    metric('control safe', bool(boiler.control_safe), boiler.control_safe ? 'good' : 'bad')
+  ].join('')}<div class="reason">${esc(boiler.reason || 'waiting for first poll')}</div></article>`;
+  const healthTone = data.active_control_ready_now ? 'good' : 'bad';
+  const summary = `<div class="status">${pill(data.active_control_ready_now ? 'ready now' : 'blocked now', healthTone)}${pill(`boiler ${data.active_boiler_control ? 'active' : 'observed'}`, data.active_boiler_control ? 'warn' : 'good')}</div>`;
+  return `<h2>TRV · ${esc(data.house_code)}</h2>${summary}<div class="grid">${boilerCard}${data.zones.map(z => {
+    const alert = !z.climate_available || z.window_open_risk || z.heating_ineffective || z.sensor_stale || z.suggested_action !== 'none';
     const tone = alert ? (z.window_open_risk || z.heating_ineffective || z.sensor_stale ? 'bad' : 'warn') : 'good';
-    return `<article class="card"><h3>${z.zone_id.toUpperCase()} <span class="${tone}">${z.mode}</span></h3>${[
+    return `<article class="card"><h3>${esc(z.zone_id.toUpperCase())} <span class="${tone}">${esc(z.mode)}</span></h3>${[
       metric('action', z.suggested_action || 'none', z.suggested_action !== 'none' ? 'warn' : 'good'),
       metric('target', fmt(z.target_temperature_c, '°C')),
       metric('suggested target', fmt(z.suggested_target_temperature_c, '°C')),
       metric('room temp', fmt(z.room_temperature_c, '°C')),
+      metric('TRV available', bool(z.climate_available), z.climate_available ? 'good' : 'bad'),
       metric('HVAC', z.hvac_mode || 'unknown'),
       metric('calendar', z.calendar_policy_state || 'unknown'),
       metric('stale', bool(z.sensor_stale), z.sensor_stale ? 'bad' : 'good')
-    ].join('')}<div class="reason">${z.reason}</div></article>`;
+    ].join('')}<div class="reason">${esc(z.reason)}</div></article>`;
   }).join('')}</div>${renderSummaries(data.daily_summaries, 'trv')}`;
 }
 function renderSummaries(items, kind) {
@@ -191,7 +205,7 @@ function renderSummaries(items, kind) {
     const m = s.metrics || {};
     const worse = (m.would_be_worse_than_current_system || 0) + (m.dangerous_miss_candidates || 0);
     const tone = worse || m.hard_safety_blockers ? 'bad' : m.would_improve_current_system ? 'warn' : 'good';
-    return `<div class="event"><span>${s.day}</span><span>${s.zone_id.toUpperCase()}</span><span class="${tone}">daily</span><span class="reason">better ${m.would_improve_current_system || 0} · worse ${worse} · blockers ${m.hard_safety_blockers || 0}</span></div>`;
+    return `<div class="event"><span>${esc(s.day)}</span><span>${esc(s.zone_id.toUpperCase())}</span><span class="${tone}">daily</span><span class="reason">better ${esc(m.would_improve_current_system || 0)} · worse ${esc(worse)} · blockers ${esc(m.hard_safety_blockers || 0)}</span></div>`;
   }).join('')}</div>`;
 }
 async function load() {

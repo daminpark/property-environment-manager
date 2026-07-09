@@ -69,6 +69,7 @@ class Settings:
     zones: tuple[ZoneConfig, ...]
     boiler_entity: str
     active_control: bool
+    active_boiler_control: bool
     poll_interval_seconds: int
     base_drying_target_c: float
     elevated_drying_target_c: float
@@ -171,6 +172,7 @@ def load_settings() -> Settings:
         zones=zones,
         boiler_entity=f"switch.{house_code}_y_boiler",
         active_control=_get_bool("TRV_ACTIVE_CONTROL", False),
+        active_boiler_control=_get_bool("TRV_ACTIVE_BOILER_CONTROL", False),
         poll_interval_seconds=_get_int("TRV_POLL_INTERVAL_SECONDS", 60),
         base_drying_target_c=_get_float("TRV_BASE_DRYING_TARGET_C", 24.0),
         elevated_drying_target_c=_get_float("TRV_ELEVATED_DRYING_TARGET_C", 25.0),

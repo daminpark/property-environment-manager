@@ -10,6 +10,8 @@ The add-on is observer-first by default:
 
 - ventilation writes are disabled unless `vent_active_control` is true;
 - TRV drying-room writes are disabled unless `trv_active_control` is true;
+- boiler writes require both `trv_active_control` and
+  `trv_active_boiler_control`;
 - TRV calendar, guest-limit, service-default, force-heat, and child-lock writes
   also require `trv_active_calendar_policy` to be true.
 
@@ -52,3 +54,7 @@ Before enabling active control in a real Home Assistant deployment:
 3. Check stale-sensor and unavailable-entity behaviour.
 4. Enable the smallest write gate needed.
 5. Keep calendar-policy writes separate until parity is clear.
+6. Never enable a new write gate while the matching legacy automation can still
+   write the same policy.
+7. Treat unavailable actuators, stale sensors, unknown TRV demand, and failed
+   command read-back as hard rollout blockers.

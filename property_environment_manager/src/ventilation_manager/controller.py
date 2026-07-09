@@ -7,7 +7,6 @@ import logging
 import statistics
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ventilation_manager.config import Settings, ZoneConfig
@@ -133,6 +132,7 @@ class ZoneSnapshot:
     zone: ZoneConfig
     now: datetime
     fan_on: bool
+    fan_available: bool
     relative_humidity: float | None
     temperature_c: float | None
     absolute_humidity: float | None
@@ -165,7 +165,9 @@ class ZoneDecision:
     sensor_stale: bool
     sample_age_minutes: float | None
     fan_on: bool
+    fan_available: bool
     fan_state_mismatch: bool
+    write_blocked: bool
 
 
 class VentilationController:
@@ -178,6 +180,7 @@ class VentilationController:
         }
         self.last_decisions: list[ZoneDecision] = []
         self.last_run_at: datetime | None = None
+        self.control_errors: dict[str, str] = {}
         self.store = EventStore(settings.database_path)
         self.load_state()
 
@@ -214,7 +217,13 @@ class VentilationController:
             decision = self.evaluate(snapshot)
             decisions.append(decision)
             await self._publish_diagnostics(ha, snapshot, decision)
-            await self._apply_decision(ha, snapshot, decision)
+            try:
+                await self._apply_decision(ha, snapshot, decision)
+                self.control_errors.pop(zone.zone_id, None)
+            except Exception as exc:
+                self.control_errors[zone.zone_id] = f"{type(exc).__name__}: {exc}"
+                LOGGER.exception("Fan command failed for zone %s", zone.zone_id)
+        await self._publish_health(ha, decisions)
         self.last_decisions = decisions
         self.last_run_at = now
         self.save_state()
@@ -271,7 +280,10 @@ class VentilationController:
             runtime.event_baseline_absolute_humidity = baseline
             runtime.peak_absolute_humidity = snapshot.absolute_humidity
             runtime.humidity_event_started_at = snapshot.now
-            runtime.fan_commanded_on_at = snapshot.now if not snapshot.fan_on else None
+            # This timestamp represents the counterfactual controller runtime. It
+            # must advance in observer mode even when the legacy automation leaves
+            # the physical fan off.
+            runtime.fan_commanded_on_at = snapshot.now
             reason = self._start_reason(delta, rate, snapshot.relative_humidity)
             runtime.last_reason = reason
             return self._decision(snapshot, runtime, True, "turn_on", reason, rate)
@@ -300,7 +312,7 @@ class VentilationController:
                 near_baseline
                 and stable_or_falling
                 and not still_too_humid
-                and (minimum_elapsed or not snapshot.fan_on)
+                and minimum_elapsed
             ):
                 runtime.mode = "idle"
                 runtime.event_baseline_absolute_humidity = None
@@ -346,23 +358,33 @@ class VentilationController:
                 absolute_humidity_gm3(relative_humidity, temperature_c), 2
             )
 
-        sample_ts = max(
-            (
-                ts
-                for ts in (
-                    parse_ha_timestamp(rh.last_updated if rh else None),
-                    parse_ha_timestamp(temp.last_updated if temp else None),
-                    parse_ha_timestamp(abs_humidity.last_updated if abs_humidity else None),
-                )
-                if ts is not None
-            ),
-            default=None,
-        )
+        humidity_ts = parse_ha_timestamp(rh.last_updated if rh else None)
+        if zone.change_only_sensor:
+            # A derived absolute-humidity entity can look fresh merely because
+            # temperature changed. For sparse sensors, the source RH timestamp
+            # is the only honest indication that moisture was sampled again.
+            sample_ts = humidity_ts
+        else:
+            sample_ts = max(
+                (
+                    ts
+                    for ts in (
+                        humidity_ts,
+                        parse_ha_timestamp(temp.last_updated if temp else None),
+                        parse_ha_timestamp(
+                            abs_humidity.last_updated if abs_humidity else None
+                        ),
+                    )
+                    if ts is not None
+                ),
+                default=None,
+            )
 
         return ZoneSnapshot(
             zone=zone,
             now=now,
             fan_on=fan is not None and fan.state == "on",
+            fan_available=fan is not None and fan.state in {"on", "off"},
             relative_humidity=relative_humidity,
             temperature_c=temperature_c,
             absolute_humidity=absolute_humidity,
@@ -414,7 +436,10 @@ class VentilationController:
             delta is not None and delta >= self.settings.rise_delta_threshold_gm3
         )
         rate_trigger = (
-            rate is not None and rate >= self.settings.rise_rate_threshold_gm3_per_min
+            rate is not None
+            and rate >= self.settings.rise_rate_threshold_gm3_per_min
+            and delta is not None
+            and delta >= self.settings.baseline_margin_gm3
         )
         high_rh_trigger = (
             delta is not None
@@ -423,14 +448,8 @@ class VentilationController:
         )
         return delta_trigger or rate_trigger or high_rh_trigger
 
-    def _runtime_too_long(self, runtime: ZoneRuntime, snapshot: ZoneSnapshot) -> bool:
-        started_at = runtime.humidity_event_started_at
-        return started_at is not None and snapshot.now - started_at >= timedelta(
-            minutes=self.settings.max_runtime_minutes
-        )
-
     def _minimum_runtime_elapsed(self, runtime: ZoneRuntime, snapshot: ZoneSnapshot) -> bool:
-        started_at = runtime.humidity_event_started_at
+        started_at = runtime.fan_commanded_on_at or runtime.humidity_event_started_at
         return started_at is None or snapshot.now - started_at >= timedelta(
             minutes=self.settings.min_runtime_minutes
         )
@@ -464,7 +483,7 @@ class VentilationController:
         if snapshot.fan_on or active_event or conservative_run:
             if runtime.humidity_event_started_at is None:
                 runtime.humidity_event_started_at = snapshot.now
-                runtime.fan_commanded_on_at = snapshot.now if not snapshot.fan_on else None
+                runtime.fan_commanded_on_at = snapshot.now
             runtime.last_reason = "sensor stale; keep fan on conservatively"
             if snapshot.zone.change_only_sensor:
                 runtime.last_reason = (
@@ -492,7 +511,7 @@ class VentilationController:
         ):
             if runtime.humidity_event_started_at is None:
                 runtime.humidity_event_started_at = snapshot.now
-                runtime.fan_commanded_on_at = snapshot.now if not snapshot.fan_on else None
+                runtime.fan_commanded_on_at = snapshot.now
             runtime.last_reason = "no safe baseline yet; RH is above high-humidity guard"
             return self._decision(
                 snapshot, runtime, True, "keep_on", runtime.last_reason, rate
@@ -558,7 +577,9 @@ class VentilationController:
             sample_age is not None
             and sample_age > self.settings.sensor_stale_minutes
         )
-        fan_state_mismatch = should_run != snapshot.fan_on
+        fan_state_mismatch = (
+            snapshot.fan_available and should_run != snapshot.fan_on
+        )
         return ZoneDecision(
             zone_id=snapshot.zone.zone_id,
             mode=runtime.mode,
@@ -574,7 +595,9 @@ class VentilationController:
             sensor_stale=sensor_stale,
             sample_age_minutes=sample_age,
             fan_on=snapshot.fan_on,
+            fan_available=snapshot.fan_available,
             fan_state_mismatch=fan_state_mismatch,
+            write_blocked=not snapshot.fan_available,
         )
 
     async def _publish_diagnostics(
@@ -594,7 +617,9 @@ class VentilationController:
             "sample_age_minutes": decision.sample_age_minutes,
             "sensor_stale": decision.sensor_stale,
             "change_only_sensor": snapshot.zone.change_only_sensor,
+            "fan_available": decision.fan_available,
             "fan_state_mismatch": decision.fan_state_mismatch,
+            "write_blocked": decision.write_blocked,
             "reason": decision.reason,
         }
         await ha.set_state(
@@ -656,12 +681,45 @@ class VentilationController:
     ) -> None:
         if not self.settings.active_control:
             return
+        if not snapshot.fan_available:
+            LOGGER.error(
+                "Refusing to control unavailable fan %s", snapshot.zone.fan_entity
+            )
+            return
         if decision.should_run and not snapshot.fan_on:
             LOGGER.info("Turning on %s: %s", snapshot.zone.fan_entity, decision.reason)
-            await ha.turn_on(snapshot.zone.fan_entity)
+            await ha.set_switch_state_verified(snapshot.zone.fan_entity, on=True)
         elif not decision.should_run and snapshot.fan_on and decision.command == "turn_off":
             LOGGER.info("Turning off %s: %s", snapshot.zone.fan_entity, decision.reason)
-            await ha.turn_off(snapshot.zone.fan_entity)
+            await ha.set_switch_state_verified(snapshot.zone.fan_entity, on=False)
+
+    async def _publish_health(
+        self, ha: HomeAssistantClient, decisions: list[ZoneDecision]
+    ) -> None:
+        unavailable = [
+            decision.zone_id for decision in decisions if not decision.fan_available
+        ]
+        stale = [decision.zone_id for decision in decisions if decision.sensor_stale]
+        if self.control_errors:
+            status = "control_error"
+        elif unavailable or stale:
+            status = "blocked"
+        else:
+            status = "ok"
+        await ha.set_state(
+            f"sensor.{self.settings.house_code}_ventilation_manager_health",
+            status,
+            {
+                "friendly_name": (
+                    f"{self.settings.house_code} Ventilation Manager Health"
+                ),
+                "active_control": self.settings.active_control,
+                "fan_unavailable": unavailable,
+                "sensor_stale": stale,
+                "control_errors": dict(sorted(self.control_errors.items())),
+                "icon": "mdi:fan-alert" if status != "ok" else "mdi:fan-check",
+            },
+        )
 
     def dashboard_payload(self) -> dict[str, Any]:
         zones = []
@@ -681,12 +739,29 @@ class VentilationController:
                 "sensor_stale": decision.sensor_stale,
                 "sample_age_minutes": decision.sample_age_minutes,
                 "fan_on": decision.fan_on,
+                "fan_available": decision.fan_available,
                 "fan_state_mismatch": decision.fan_state_mismatch,
+                "write_blocked": decision.write_blocked,
             })
+        unavailable = [zone["zone_id"] for zone in zones if not zone["fan_available"]]
+        stale = [zone["zone_id"] for zone in zones if zone["sensor_stale"]]
         return {
             "app": "ventilation_manager",
             "house_code": self.settings.house_code,
             "active_control": self.settings.active_control,
+            "control_scope": "humidity_only",
+            "active_control_ready_now": (
+                not unavailable and not stale and not self.control_errors
+            ),
+            "readiness_blockers": {
+                "fan_unavailable": unavailable,
+                "sensor_stale": stale,
+                "control_errors": dict(sorted(self.control_errors.items())),
+                "cutover_requirements": [
+                    "disable only the legacy humidity automations at cutover",
+                    "keep presence, button, evening-air-out, and drying-room automations enabled",
+                ],
+            },
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "zones": zones,
             "recent_events": self.store.recent_events(),

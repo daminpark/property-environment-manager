@@ -132,6 +132,7 @@ class ZoneSnapshot:
     zone: ZoneConfig
     now: datetime
     boiler_on: bool
+    boiler_available: bool
     climate_available: bool
     room_temperature_c: float | None
     room_sample_ts: datetime | None
@@ -162,6 +163,7 @@ class ZoneDecision:
     hvac_action: str | None
     child_lock_on: bool | None
     boiler_on: bool
+    boiler_available: bool
     room_temperature_rate_c_per_hour: float | None
     heating_response_c: float | None
     window_open_risk: bool
@@ -185,6 +187,25 @@ class ZoneDecision:
     calendar_policy_suppressed_by_renovation: bool | None
 
 
+@dataclass(frozen=True)
+class BoilerDecision:
+    """Aggregate boiler recommendation across every configured TRV."""
+
+    zone_id: str
+    mode: str
+    suggested_action: str
+    reason: str
+    boiler_entity: str
+    boiler_on: bool
+    boiler_available: bool
+    boiler_should_be_on: bool
+    demanding_zone_ids: tuple[str, ...]
+    unavailable_zone_ids: tuple[str, ...]
+    control_safe: bool
+    state_mismatch: bool
+    active_control: bool
+
+
 class TRVRegulator:
     """Observer-first TRV regulator."""
 
@@ -194,7 +215,9 @@ class TRVRegulator:
             zone.zone_id: ZoneRuntime(zone_id=zone.zone_id) for zone in settings.zones
         }
         self.last_decisions: list[ZoneDecision] = []
+        self.last_boiler_decision: BoilerDecision | None = None
         self.last_run_at: datetime | None = None
+        self.control_errors: dict[str, str] = {}
         self.store = EventStore(settings.database_path)
         self.load_state()
 
@@ -227,10 +250,16 @@ class TRVRegulator:
         now = datetime.now(UTC)
         boiler_state = states.get(self.settings.boiler_entity)
         boiler_on = boiler_state is not None and boiler_state.state == "on"
+        boiler_available = boiler_state is not None and boiler_state.state in {
+            "on",
+            "off",
+        }
         calendar_policy = await self._calendar_policy_evaluator(ha, states, now)
         decisions: list[ZoneDecision] = []
         for zone in self.settings.zones:
-            snapshot = self._snapshot(zone, states, now, boiler_on)
+            snapshot = self._snapshot(
+                zone, states, now, boiler_on, boiler_available
+            )
             policy = (
                 calendar_policy.policy_for_zone(zone.zone_id)
                 if calendar_policy is not None
@@ -239,11 +268,30 @@ class TRVRegulator:
             decision = self.evaluate(snapshot, policy)
             decisions.append(decision)
             await self._publish_diagnostics(ha, snapshot, decision)
-            await self._apply_decision(ha, snapshot, decision)
+            try:
+                await self._apply_decision(ha, snapshot, decision)
+                self.control_errors.pop(zone.zone_id, None)
+            except Exception as exc:
+                self.control_errors[zone.zone_id] = f"{type(exc).__name__}: {exc}"
+                LOGGER.exception("TRV command failed for zone %s", zone.zone_id)
+        boiler_decision = self._boiler_decision(
+            decisions,
+            boiler_on=boiler_on,
+            boiler_available=boiler_available,
+        )
+        await self._publish_boiler_diagnostics(ha, boiler_decision)
+        try:
+            await self._apply_boiler_decision(ha, boiler_decision)
+            self.control_errors.pop("boiler", None)
+        except Exception as exc:
+            self.control_errors["boiler"] = f"{type(exc).__name__}: {exc}"
+            LOGGER.exception("Boiler command failed")
+        await self._publish_health(ha, decisions, boiler_decision)
         self.last_decisions = decisions
+        self.last_boiler_decision = boiler_decision
         self.last_run_at = now
         self.save_state()
-        self.store.record_run(decisions, run_at=now)
+        self.store.record_run([*decisions, boiler_decision], run_at=now)
         return decisions
 
     async def _calendar_policy_evaluator(
@@ -424,6 +472,7 @@ class TRVRegulator:
         states: dict[str, EntityState],
         now: datetime,
         boiler_on: bool,
+        boiler_available: bool,
     ) -> ZoneSnapshot:
         climate = states.get(zone.climate_entity)
         room_temp = states.get(zone.room_temperature_entity)
@@ -442,6 +491,7 @@ class TRVRegulator:
             zone=zone,
             now=now,
             boiler_on=boiler_on,
+            boiler_available=boiler_available,
             climate_available=climate is not None
             and climate.state not in {"unknown", "unavailable"},
             room_temperature_c=as_float(room_temp),
@@ -767,24 +817,25 @@ class TRVRegulator:
         target = snapshot.target_temperature_c
         if target is None:
             return None
-        if target > self.settings.guest_max_target_c:
+        above_maximum = target > self.settings.guest_max_target_c
+        if above_maximum:
             action = "would_enforce_guest_max_target"
             corrected = self.settings.guest_max_target_c
-            predicate = lambda sample: (
-                sample.target_temperature_c is not None
-                and sample.target_temperature_c > self.settings.guest_max_target_c
-            )
         elif target < self.settings.guest_min_target_c:
             action = "would_enforce_guest_min_target"
             corrected = self.settings.guest_min_target_c
-            predicate = lambda sample: (
-                sample.target_temperature_c is not None
-                and sample.target_temperature_c < self.settings.guest_min_target_c
-            )
         else:
             return None
 
-        since = self._sample_condition_since(runtime, predicate)
+        def target_remains_out_of_range(sample: Sample) -> bool:
+            sample_target = sample.target_temperature_c
+            if sample_target is None:
+                return False
+            if above_maximum:
+                return sample_target > self.settings.guest_max_target_c
+            return sample_target < self.settings.guest_min_target_c
+
+        since = self._sample_condition_since(runtime, target_remains_out_of_range)
         if since is None:
             return None
         if snapshot.now - since < timedelta(minutes=self.settings.guest_limit_delay_minutes):
@@ -899,6 +950,7 @@ class TRVRegulator:
             hvac_action=snapshot.hvac_action,
             child_lock_on=snapshot.child_lock_on,
             boiler_on=snapshot.boiler_on,
+            boiler_available=snapshot.boiler_available,
             room_temperature_rate_c_per_hour=room_rate,
             heating_response_c=heating_response,
             window_open_risk=window_open_risk,
@@ -957,6 +1009,7 @@ class TRVRegulator:
             "absolute_humidity_entity": snapshot.zone.absolute_humidity_entity,
             "relative_humidity_entity": snapshot.zone.relative_humidity_entity,
             "boiler_entity": self.settings.boiler_entity,
+            "boiler_available": decision.boiler_available,
             "reason": decision.reason,
             "hvac_mode": decision.hvac_mode,
             "child_lock_on": decision.child_lock_on,
@@ -1014,7 +1067,9 @@ class TRVRegulator:
         )
         await ha.set_state(
             f"{prefix}_child_lock_on",
-            "unknown" if decision.child_lock_on is None else ("on" if decision.child_lock_on else "off"),
+            "unknown"
+            if decision.child_lock_on is None
+            else ("on" if decision.child_lock_on else "off"),
             {**attrs, "icon": "mdi:lock"},
         )
         await ha.set_state(
@@ -1025,7 +1080,11 @@ class TRVRegulator:
         await ha.set_state(
             f"{prefix}_calendar_policy_target",
             self._round_or_unknown(decision.calendar_policy_target_temperature_c, 1),
-            {**attrs, "unit_of_measurement": "°C", "icon": "mdi:calendar-thermometer"},
+            {
+                **attrs,
+                "unit_of_measurement": "°C",
+                "icon": "mdi:calendar-thermometer",
+            },
         )
         await ha.set_state(
             f"{prefix}_room_temperature_rate",
@@ -1035,7 +1094,11 @@ class TRVRegulator:
         await ha.set_state(
             f"{prefix}_heating_response",
             self._round_or_unknown(decision.heating_response_c, 2),
-            {**attrs, "unit_of_measurement": "°C", "icon": "mdi:radiator-disabled"},
+            {
+                **attrs,
+                "unit_of_measurement": "°C",
+                "icon": "mdi:radiator-disabled",
+            },
         )
         await ha.set_state(
             f"{prefix}_window_open_risk",
@@ -1045,7 +1108,11 @@ class TRVRegulator:
         await ha.set_state(
             f"{prefix}_drying_absolute_humidity_rate",
             self._round_or_unknown(decision.absolute_humidity_rate_gm3_per_min, 3),
-            {**attrs, "unit_of_measurement": "g/m3/min", "icon": "mdi:water-sync"},
+            {
+                **attrs,
+                "unit_of_measurement": "g/m3/min",
+                "icon": "mdi:water-sync",
+            },
         )
         await ha.set_state(
             f"{prefix}_climate_available",
@@ -1063,6 +1130,159 @@ class TRVRegulator:
             {**attrs, "icon": "mdi:radiator-off"},
         )
 
+    def _boiler_decision(
+        self,
+        decisions: list[ZoneDecision],
+        *,
+        boiler_on: bool,
+        boiler_available: bool,
+    ) -> BoilerDecision:
+        demanding = tuple(
+            decision.zone_id
+            for decision in decisions
+            if decision.climate_available and decision.hvac_action == "heating"
+        )
+        unavailable = tuple(
+            decision.zone_id
+            for decision in decisions
+            if not decision.climate_available
+            or decision.hvac_action not in {"heating", "idle", "off"}
+        )
+        should_be_on = bool(demanding)
+        control_safe = boiler_available and (should_be_on or not unavailable)
+        mode = "boiler_matched"
+        action = "none"
+        reason = "boiler matches aggregate TRV demand"
+
+        if not boiler_available:
+            mode = "boiler_unavailable"
+            action = "blocked_boiler_unavailable"
+            reason = "boiler relay unavailable; no command is safe"
+        elif should_be_on and not boiler_on:
+            mode = "boiler_demand_mismatch"
+            action = "would_turn_boiler_on"
+            reason = "heating demand from " + ", ".join(demanding)
+        elif not should_be_on and boiler_on and unavailable:
+            mode = "boiler_demand_unknown"
+            action = "blocked_turn_off_trv_unavailable"
+            reason = (
+                "boiler is on with no known demand, but unavailable TRVs prevent "
+                "a safe turn-off: " + ", ".join(unavailable)
+            )
+        elif not should_be_on and boiler_on:
+            mode = "boiler_demand_mismatch"
+            action = "would_turn_boiler_off"
+            reason = "all configured TRVs are available and none demand heat"
+        elif not should_be_on and unavailable:
+            mode = "boiler_demand_unknown"
+            action = "none"
+            reason = "no known heat demand; unavailable TRVs: " + ", ".join(unavailable)
+
+        return BoilerDecision(
+            zone_id="boiler",
+            mode=mode,
+            suggested_action=action,
+            reason=reason,
+            boiler_entity=self.settings.boiler_entity,
+            boiler_on=boiler_on,
+            boiler_available=boiler_available,
+            boiler_should_be_on=should_be_on,
+            demanding_zone_ids=demanding,
+            unavailable_zone_ids=unavailable,
+            control_safe=control_safe,
+            state_mismatch=action in {"would_turn_boiler_on", "would_turn_boiler_off"},
+            active_control=(
+                self.settings.active_control and self.settings.active_boiler_control
+            ),
+        )
+
+    async def _publish_boiler_diagnostics(
+        self, ha: HomeAssistantClient, decision: BoilerDecision
+    ) -> None:
+        prefix = f"sensor.{self.settings.house_code}_trv_regulator_boiler"
+        attrs = {
+            "friendly_name": f"{self.settings.house_code} TRV Regulator Boiler",
+            "boiler_entity": decision.boiler_entity,
+            "boiler_on": decision.boiler_on,
+            "boiler_available": decision.boiler_available,
+            "boiler_should_be_on": decision.boiler_should_be_on,
+            "demanding_zone_ids": list(decision.demanding_zone_ids),
+            "unavailable_zone_ids": list(decision.unavailable_zone_ids),
+            "control_safe": decision.control_safe,
+            "state_mismatch": decision.state_mismatch,
+            "active_control": decision.active_control,
+            "suggested_action": decision.suggested_action,
+            "reason": decision.reason,
+        }
+        await ha.set_state(
+            f"{prefix}_policy", decision.mode, {**attrs, "icon": "mdi:water-boiler-alert"}
+        )
+        await ha.set_state(
+            f"{prefix}_available",
+            "on" if decision.boiler_available else "off",
+            {**attrs, "icon": "mdi:access-point-check"},
+        )
+        await ha.set_state(
+            f"{prefix}_should_be_on",
+            "on" if decision.boiler_should_be_on else "off",
+            {**attrs, "icon": "mdi:radiator"},
+        )
+        await ha.set_state(
+            f"{prefix}_mismatch",
+            "on" if decision.state_mismatch else "off",
+            {**attrs, "icon": "mdi:alert-circle-outline"},
+        )
+
+    async def _apply_boiler_decision(
+        self, ha: HomeAssistantClient, decision: BoilerDecision
+    ) -> None:
+        if not (self.settings.active_control and self.settings.active_boiler_control):
+            return
+        if not decision.control_safe:
+            LOGGER.error("Refusing unsafe boiler command: %s", decision.reason)
+            return
+        if decision.suggested_action == "would_turn_boiler_on":
+            await ha.set_switch_state_verified(decision.boiler_entity, on=True)
+        elif decision.suggested_action == "would_turn_boiler_off":
+            await ha.set_switch_state_verified(decision.boiler_entity, on=False)
+
+    async def _publish_health(
+        self,
+        ha: HomeAssistantClient,
+        decisions: list[ZoneDecision],
+        boiler: BoilerDecision,
+    ) -> None:
+        unavailable = [
+            decision.zone_id
+            for decision in decisions
+            if not decision.climate_available
+            or decision.hvac_action not in {"heating", "idle", "off"}
+        ]
+        stale = [decision.zone_id for decision in decisions if decision.sensor_stale]
+        if self.control_errors:
+            status = "control_error"
+        elif not boiler.control_safe or unavailable or stale:
+            status = "blocked"
+        else:
+            status = "ok"
+        await ha.set_state(
+            f"sensor.{self.settings.house_code}_trv_regulator_health",
+            status,
+            {
+                "friendly_name": f"{self.settings.house_code} TRV Regulator Health",
+                "active_control": self.settings.active_control,
+                "active_boiler_control": self.settings.active_boiler_control,
+                "active_calendar_policy": self.settings.active_calendar_policy,
+                "boiler_available": boiler.boiler_available,
+                "boiler_control_safe": boiler.control_safe,
+                "boiler_policy_action": boiler.suggested_action,
+                "trv_unavailable_or_unknown_demand": unavailable,
+                "sensor_stale": stale,
+                "control_errors": dict(sorted(self.control_errors.items())),
+                "icon": "mdi:radiator-off" if status != "ok" else "mdi:radiator",
+            },
+        )
+
     async def _apply_decision(
         self,
         ha: HomeAssistantClient,
@@ -1071,19 +1291,30 @@ class TRVRegulator:
     ) -> None:
         if not self.settings.active_control:
             return
+        if not snapshot.climate_available:
+            LOGGER.error(
+                "Refusing to control unavailable TRV %s", snapshot.zone.climate_entity
+            )
+            return
         if (
             decision.suggested_action == "would_raise_drying_target"
             and decision.suggested_target_temperature_c is not None
             and snapshot.target_temperature_c is not None
             and decision.suggested_target_temperature_c > snapshot.target_temperature_c
         ):
+            if decision.sensor_stale:
+                LOGGER.error(
+                    "Refusing drying target write with stale sensor for %s",
+                    snapshot.zone.climate_entity,
+                )
+                return
             LOGGER.info(
                 "Setting %s to %.1fC: %s",
                 snapshot.zone.climate_entity,
                 decision.suggested_target_temperature_c,
                 decision.reason,
             )
-            await ha.set_climate_temperature(
+            await ha.set_climate_temperature_verified(
                 snapshot.zone.climate_entity, decision.suggested_target_temperature_c
             )
             return
@@ -1104,28 +1335,24 @@ class TRVRegulator:
                 decision.suggested_target_temperature_c,
                 decision.reason,
             )
-            await ha.set_climate_temperature(
+            await ha.set_climate_temperature_verified(
                 snapshot.zone.climate_entity, decision.suggested_target_temperature_c
             )
             return
         if decision.suggested_action == "would_set_hvac_mode_heat":
             LOGGER.info("Restoring %s HVAC mode to heat", snapshot.zone.climate_entity)
-            await ha.set_climate_hvac_mode(snapshot.zone.climate_entity, "heat")
+            await ha.set_climate_hvac_mode_verified(snapshot.zone.climate_entity, "heat")
             return
         if (
             decision.suggested_action == "would_restore_child_lock"
             and snapshot.zone.child_lock_entity
         ):
             LOGGER.info("Restoring child lock for %s", snapshot.zone.climate_entity)
-            await ha.turn_on(snapshot.zone.child_lock_entity)
+            await ha.set_switch_state_verified(snapshot.zone.child_lock_entity, on=True)
 
     def dashboard_payload(self) -> dict[str, Any]:
         zones = []
-        boiler_on = False
-        boiler_should_be_on = False
         for decision in self.last_decisions:
-            boiler_on = boiler_on or decision.boiler_on
-            boiler_should_be_on = boiler_should_be_on or decision.hvac_action == "heating"
             zones.append({
                 "zone_id": decision.zone_id,
                 "mode": decision.mode,
@@ -1140,6 +1367,7 @@ class TRVRegulator:
                 "child_lock_on": decision.child_lock_on,
                 "child_lock_age_seconds": decision.child_lock_age_seconds,
                 "boiler_on": decision.boiler_on,
+                "boiler_available": decision.boiler_available,
                 "room_temperature_rate_c_per_hour": decision.room_temperature_rate_c_per_hour,
                 "heating_response_c": decision.heating_response_c,
                 "window_open_risk": decision.window_open_risk,
@@ -1163,21 +1391,46 @@ class TRVRegulator:
                     decision.calendar_policy_suppressed_by_renovation
                 ),
             })
-        boiler_policy_action = "none"
-        if boiler_should_be_on and not boiler_on:
-            boiler_policy_action = "would_turn_boiler_on"
-        elif boiler_on and not boiler_should_be_on:
-            boiler_policy_action = "would_turn_boiler_off"
+        boiler = self.last_boiler_decision
+        unavailable = [zone["zone_id"] for zone in zones if not zone["climate_available"]]
+        stale = [zone["zone_id"] for zone in zones if zone["sensor_stale"]]
         return {
             "app": "trv_regulator",
             "house_code": self.settings.house_code,
             "active_control": self.settings.active_control,
+            "active_boiler_control": self.settings.active_boiler_control,
             "calendar_policy_enabled": self.settings.calendar_policy_enabled,
             "active_calendar_policy": self.settings.active_calendar_policy,
             "boiler_entity": self.settings.boiler_entity,
-            "boiler_on": boiler_on,
-            "boiler_should_be_on": boiler_should_be_on,
-            "boiler_policy_action": boiler_policy_action,
+            "boiler_on": boiler.boiler_on if boiler else False,
+            "boiler_available": boiler.boiler_available if boiler else False,
+            "boiler_should_be_on": boiler.boiler_should_be_on if boiler else False,
+            "boiler_policy_action": boiler.suggested_action if boiler else "unknown",
+            "boiler_policy": None if boiler is None else {
+                "mode": boiler.mode,
+                "reason": boiler.reason,
+                "control_safe": boiler.control_safe,
+                "state_mismatch": boiler.state_mismatch,
+                "demanding_zone_ids": list(boiler.demanding_zone_ids),
+                "unavailable_zone_ids": list(boiler.unavailable_zone_ids),
+            },
+            "active_control_ready_now": bool(
+                boiler
+                and boiler.control_safe
+                and not unavailable
+                and not stale
+                and not self.control_errors
+            ),
+            "readiness_blockers": {
+                "boiler_unavailable": bool(boiler and not boiler.boiler_available),
+                "trv_unavailable": unavailable,
+                "sensor_stale": stale,
+                "control_errors": dict(sorted(self.control_errors.items())),
+                "cutover_requirements": [
+                    "disable legacy policy automations only when the matching write gate is enabled",
+                    "keep renovation-mode restore and drying-room daily reset in Home Assistant until modeled",
+                ],
+            },
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "zones": zones,
             "recent_events": self.store.recent_events(),

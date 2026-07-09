@@ -61,7 +61,6 @@ class Settings:
     high_rh_guard_percent: float
     sensor_stale_minutes: int
     min_runtime_minutes: int
-    max_runtime_minutes: int
     ha_url: str
     ha_token: str
     state_path: Path
@@ -123,7 +122,6 @@ def load_settings() -> Settings:
         high_rh_guard_percent=_get_float("VENT_HIGH_RH_GUARD_PERCENT", 75.0),
         sensor_stale_minutes=_get_int("VENT_SENSOR_STALE_MINUTES", 30),
         min_runtime_minutes=_get_int("VENT_MIN_RUNTIME_MINUTES", 20),
-        max_runtime_minutes=_get_int("VENT_MAX_RUNTIME_MINUTES", 180),
         ha_url=os.getenv("VENT_HA_URL", "http://supervisor/core").rstrip("/"),
         ha_token=os.getenv("VENT_HA_TOKEN", ""),
         state_path=Path(os.getenv("VENT_STATE_PATH", "/data/ventilation_manager_state.json")),

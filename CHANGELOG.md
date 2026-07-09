@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.0
+
+- Adds fail-safe aggregate boiler demand diagnostics on every TRV poll.
+- Adds a separate boiler-control gate; boiler turn-off is blocked when any TRV
+  demand is unknown.
+- Adds verified state read-back and bounded retry support for future device
+  writes.
+- Makes ventilation observer minimum runtime independent of the real fan state.
+- Suppresses low-delta rate-only humidity starts and treats unavailable fans as
+  hard write blockers.
+- Uses source humidity timestamps for sparse/change-only sensors.
+- Removes the obsolete ventilation maximum-runtime option.
+- Documents staged ownership of legacy presence, button, air-out, drying-room,
+  renovation, and calendar routines.
+
 ## Unreleased
 
 - Improves public portfolio documentation, privacy notes, and architecture notes.

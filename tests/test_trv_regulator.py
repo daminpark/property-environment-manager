@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from trv_regulator.calendar_policy import CalendarPolicyEvaluator
 from trv_regulator.config import Settings, ZoneConfig, load_settings
 from trv_regulator.controller import TRVRegulator, ZoneSnapshot
-from trv_regulator.ha.client import HomeAssistantClient
+from trv_regulator.ha.client import EntityState, HomeAssistantClient
 
 
 def make_settings(tmp_path: Path, zone: ZoneConfig | None = None) -> Settings:
@@ -23,6 +25,7 @@ def make_settings(tmp_path: Path, zone: ZoneConfig | None = None) -> Settings:
         zones=(zone,),
         boiler_entity="switch.193_y_boiler",
         active_control=False,
+        active_boiler_control=False,
         poll_interval_seconds=60,
         base_drying_target_c=24.0,
         elevated_drying_target_c=25.0,
@@ -50,6 +53,7 @@ def snapshot(
     target: float = 24.0,
     hvac_action: str = "idle",
     boiler_on: bool = False,
+    boiler_available: bool = True,
     absolute_humidity: float | None = 12.0,
     relative_humidity: float | None = 55.0,
     hvac_mode: str = "heat",
@@ -60,6 +64,7 @@ def snapshot(
         zone=settings.zones[0],
         now=now,
         boiler_on=boiler_on,
+        boiler_available=boiler_available,
         climate_available=True,
         room_temperature_c=room_temp,
         room_sample_ts=now,
@@ -232,6 +237,7 @@ def test_missing_room_temperature_is_explicitly_unavailable(tmp_path: Path) -> N
         zone=snap.zone,
         now=snap.now,
         boiler_on=snap.boiler_on,
+        boiler_available=snap.boiler_available,
         climate_available=snap.climate_available,
         room_temperature_c=None,
         room_sample_ts=None,
@@ -264,6 +270,7 @@ def test_missing_climate_entity_is_explicitly_unavailable(tmp_path: Path) -> Non
         zone=snap.zone,
         now=snap.now,
         boiler_on=snap.boiler_on,
+        boiler_available=snap.boiler_available,
         climate_available=False,
         room_temperature_c=snap.room_temperature_c,
         room_sample_ts=snap.room_sample_ts,
@@ -620,3 +627,181 @@ def test_renovation_mode_suppresses_guest_limit_policy(tmp_path: Path) -> None:
 
     assert decision.suggested_action == "none"
     assert decision.calendar_policy_suppressed_by_renovation is True
+
+
+def test_boiler_shadow_recommends_off_only_when_every_trv_is_available(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    idle = regulator.evaluate(snapshot(settings, now, hvac_action="idle", boiler_on=True))
+
+    safe = regulator._boiler_decision(
+        [idle], boiler_on=True, boiler_available=True
+    )
+    blocked = regulator._boiler_decision(
+        [replace(idle, climate_available=False, hvac_action=None)],
+        boiler_on=True,
+        boiler_available=True,
+    )
+
+    assert safe.suggested_action == "would_turn_boiler_off"
+    assert safe.control_safe is True
+    assert blocked.suggested_action == "blocked_turn_off_trv_unavailable"
+    assert blocked.control_safe is False
+    assert blocked.unavailable_zone_ids == ("z",)
+
+
+def test_boiler_shadow_treats_missing_hvac_action_as_unknown_demand(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    idle = regulator.evaluate(snapshot(settings, now, hvac_action="idle", boiler_on=True))
+
+    decision = regulator._boiler_decision(
+        [replace(idle, hvac_action=None)],
+        boiler_on=True,
+        boiler_available=True,
+    )
+
+    assert decision.suggested_action == "blocked_turn_off_trv_unavailable"
+    assert decision.control_safe is False
+
+
+def test_boiler_shadow_can_turn_on_for_known_demand_with_an_unavailable_trv(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    heating = regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            hvac_action="heating",
+            boiler_on=False,
+            room_temp=20.0,
+            target=24.0,
+        )
+    )
+    unavailable = replace(
+        heating,
+        zone_id="1",
+        climate_available=False,
+        hvac_action=None,
+    )
+
+    decision = regulator._boiler_decision(
+        [heating, unavailable], boiler_on=False, boiler_available=True
+    )
+
+    assert decision.suggested_action == "would_turn_boiler_on"
+    assert decision.boiler_should_be_on is True
+    assert decision.control_safe is True
+    assert decision.demanding_zone_ids == ("z",)
+    assert decision.unavailable_zone_ids == ("1",)
+
+
+def test_boiler_unavailable_is_a_hard_command_blocker(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    heating = regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            hvac_action="heating",
+            boiler_on=False,
+            boiler_available=False,
+        )
+    )
+
+    decision = regulator._boiler_decision(
+        [heating], boiler_on=False, boiler_available=False
+    )
+
+    assert decision.mode == "boiler_unavailable"
+    assert decision.suggested_action == "blocked_boiler_unavailable"
+    assert decision.control_safe is False
+    assert decision.state_mismatch is False
+
+
+def test_observer_run_publishes_boiler_policy_without_device_writes(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    regulator = TRVRegulator(settings)
+    now = datetime.now(UTC).isoformat()
+    zone = settings.zones[0]
+
+    class FakeHomeAssistant:
+        def __init__(self) -> None:
+            self.published: list[tuple[str, object, dict[str, object]]] = []
+
+        async def get_states(self) -> dict[str, EntityState]:
+            return {
+                settings.boiler_entity: EntityState(
+                    settings.boiler_entity, "unavailable", {}, now, now
+                ),
+                zone.climate_entity: EntityState(
+                    zone.climate_entity,
+                    "heat",
+                    {
+                        "current_temperature": 22.0,
+                        "temperature": 24.0,
+                        "hvac_action": "idle",
+                    },
+                    now,
+                    now,
+                ),
+                zone.room_temperature_entity: EntityState(
+                    zone.room_temperature_entity, "22", {}, now, now
+                ),
+                str(zone.absolute_humidity_entity): EntityState(
+                    str(zone.absolute_humidity_entity), "12", {}, now, now
+                ),
+                str(zone.relative_humidity_entity): EntityState(
+                    str(zone.relative_humidity_entity), "55", {}, now, now
+                ),
+                str(settings.renovation_mode_entity): EntityState(
+                    str(settings.renovation_mode_entity), "off", {}, now, now
+                ),
+            }
+
+        async def get_calendar_events(
+            self, *_: object, **__: object
+        ) -> dict[str, list[dict[str, object]]]:
+            return {}
+
+        async def set_state(
+            self, entity_id: str, state: object, attributes: dict[str, object]
+        ) -> None:
+            self.published.append((entity_id, state, attributes))
+
+        async def set_switch_state_verified(self, *_: object, **__: object) -> None:
+            raise AssertionError("observer mode attempted a switch write")
+
+        async def set_climate_temperature_verified(
+            self, *_: object, **__: object
+        ) -> None:
+            raise AssertionError("observer mode attempted a temperature write")
+
+        async def set_climate_hvac_mode_verified(
+            self, *_: object, **__: object
+        ) -> None:
+            raise AssertionError("observer mode attempted an HVAC-mode write")
+
+    fake = FakeHomeAssistant()
+    decisions = asyncio.run(regulator.run_once(fake))  # type: ignore[arg-type]
+
+    assert len(decisions) == 1
+    assert regulator.last_boiler_decision is not None
+    assert regulator.last_boiler_decision.suggested_action == "blocked_boiler_unavailable"
+    published_ids = {item[0] for item in fake.published}
+    assert f"sensor.{settings.house_code}_trv_regulator_boiler_policy" in published_ids
+    assert f"sensor.{settings.house_code}_trv_regulator_health" in published_ids
+    assert f"sensor.{settings.house_code}_z_trv_regulator_heating_ineffective" in published_ids
+    assert all(item[2]["active_control"] is False for item in fake.published)

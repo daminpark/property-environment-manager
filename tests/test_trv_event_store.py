@@ -130,3 +130,34 @@ def test_daily_summary_marks_worse_when_drying_boost_has_blockers(tmp_path: Path
     assert metrics["unsafe_drying_boost_candidates"] == 1
     assert metrics["would_be_worse_than_current_system"] == 1
     assert metrics["would_improve_current_system"] == 0
+
+
+def test_daily_summary_records_blocked_unavailable_boiler(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "events.sqlite3")
+    run_at = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+
+    store.record_run(
+        [
+            {
+                "zone_id": "boiler",
+                "mode": "boiler_unavailable",
+                "suggested_action": "blocked_boiler_unavailable",
+                "reason": "boiler relay unavailable; no command is safe",
+                "boiler_on": False,
+                "boiler_available": False,
+                "boiler_should_be_on": True,
+                "demanding_zone_ids": ["z"],
+                "unavailable_zone_ids": [],
+                "control_safe": False,
+                "state_mismatch": False,
+                "active_control": False,
+            }
+        ],
+        run_at=run_at,
+    )
+
+    summary = store.daily_summaries()[0]
+    assert summary["zone_id"] == "boiler"
+    assert summary["metrics"]["boiler_unavailable_observations"] == 1
+    assert summary["metrics"]["boiler_blocked_commands"] == 1
+    assert summary["metrics"]["hard_safety_blockers"] == 1

@@ -44,7 +44,13 @@ Important review points:
 - learned baseline and event baseline are separate;
 - stale sensors do not silently create new starts from old readings;
 - fans are only written when `vent_active_control` is enabled;
-- observer mode still records mismatches between "fan is on" and "fan should run".
+- observer mode still records mismatches between "fan is on" and "fan should run";
+- observer minimum runtime is counterfactual and does not depend on the legacy
+  automation turning the physical fan on;
+- unavailable fans block writes, and rate-only starts also require a meaningful
+  rise above the learned baseline;
+- initial active scope is humidity only; presence, button, scheduled air-out,
+  and drying-room routines remain explicitly Home Assistant-owned.
 
 ## TRV Controller
 
@@ -57,11 +63,17 @@ restore service-room defaults, restore heat mode, and restore child lock.
 Important review points:
 
 - drying-room writes only require `trv_active_control`;
+- boiler writes require both `trv_active_control` and
+  `trv_active_boiler_control`;
 - calendar, guest-limit, service-default, force-heat, and child-lock writes also
   require `trv_active_calendar_policy`;
 - calendar policy can be observed for parity before it is allowed to write;
 - daily summaries distinguish safe improvement candidates from unsafe write
-  blockers.
+  blockers;
+- aggregate boiler demand is recomputed every poll rather than only when a TRV
+  changes state;
+- a boiler turn-off is blocked if any TRV is unavailable or has unknown demand;
+- device writes require state read-back with bounded retries.
 
 ## Why The Controllers Stay Separate
 
@@ -83,3 +95,18 @@ subsystem to remain observer-only while the other is active.
 Demo artifacts use a synthetic house namespace. A real deployment should review
 `house_code`, zone IDs, timezone, and active-control flags explicitly in Home
 Assistant add-on options.
+
+## Staged Ownership
+
+The observer and existing Home Assistant automations may run together because
+the observer does not write. At cutover, only the legacy automation matching the
+newly enabled write gate should be disabled. Unrelated safety and auxiliary
+routines remain enabled until the add-on models and tests them explicitly.
+
+Recommended order:
+
+1. combined observer with every write gate off;
+2. humidity control for one zone while presence/button/schedule routines remain;
+3. calendar/TRV policy after event parity review;
+4. boiler control only after relay availability and mismatch history are clean;
+5. remove remaining legacy routines only after their behavior is represented.
