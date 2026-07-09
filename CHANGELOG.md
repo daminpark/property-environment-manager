@@ -20,6 +20,8 @@
 
 ## Unreleased
 
+- Adds a reusable Home Assistant device-health package for aggregated outage,
+  manager-heartbeat, recovery, and daily lighting notifications.
 - Improves public portfolio documentation, privacy notes, and architecture notes.
 - Adds synthetic demo artifacts, CI checks, and reproducible dev dependencies.
 - Keeps demo-safe examples separate from real runtime defaults.

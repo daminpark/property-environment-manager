@@ -173,6 +173,13 @@ The combined add-on uses SQLite's online backup API to create consistent `/data`
 copies, runs `integrity_check`, and records one-time import markers. It refuses
 to overwrite a database that the combined add-on has already created.
 
+## Home Assistant Notifications
+
+The add-on publishes health entities but intentionally leaves notification
+routing to Home Assistant. A reusable, rate-limited package for manager
+heartbeats and property-device availability is documented in
+[`docs/device-health.md`](docs/device-health.md).
+
 For public examples or external review, create redacted copies:
 
 ```bash
