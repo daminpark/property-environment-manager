@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 from typing import Any
@@ -63,7 +64,7 @@ class DashboardServer:
         await writer.drain()
 
     def _html(self) -> str:
-        return HTML.replace("__TITLE__", self.title)
+        return HTML.replace("__TITLE__", html.escape(self.title))
 
 
 HTML = r'''<!doctype html>
@@ -105,6 +106,13 @@ h1 { margin:0; font-size:24px; letter-spacing:0; font-weight:700; }
 <section class="events" id="events"></section>
 </main>
 <script>
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, character => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+})[character]);
 const fmt = (v, suffix='') => v === null || v === undefined ? 'unknown' : `${v}${suffix}`;
 const cls = (z) => z.fan_state_mismatch || z.sensor_stale ? 'bad' : z.should_run ? 'warn' : 'good';
 async function load() {
@@ -113,12 +121,12 @@ async function load() {
   document.getElementById('subtitle').textContent = `${data.house_code} · ${data.active_control ? 'ACTIVE CONTROL' : 'observer only'} · updated ${data.last_run_at || 'never'}`;
   const active = data.zones.filter(z => z.should_run).length;
   const mismatches = data.zones.filter(z => z.fan_state_mismatch).length;
-  document.getElementById('status').innerHTML = `<span class="pill">${data.zones.length} zones</span><span class="pill warn">${active} would run</span><span class="pill ${mismatches ? 'bad' : 'good'}">${mismatches} mismatches</span>`;
-  document.getElementById('zones').innerHTML = data.zones.map(z => `<article class="card"><h2>${data.house_code} ${z.zone_id.toUpperCase()} <span class="${cls(z)}">${z.mode}</span></h2><div class="metric"><span class="key">would run</span><span class="value ${z.should_run ? 'warn' : 'good'}">${z.should_run ? 'yes' : 'no'}</span></div><div class="metric"><span class="key">actual fan</span><span class="value">${z.fan_on ? 'on' : 'off'}</span></div><div class="metric"><span class="key">abs humidity</span><span class="value">${fmt(z.absolute_humidity, ' g/m3')}</span></div><div class="metric"><span class="key">delta</span><span class="value">${fmt(z.delta_absolute_humidity, ' g/m3')}</span></div><div class="metric"><span class="key">rate</span><span class="value">${fmt(z.rate_gm3_per_min, ' g/m3/min')}</span></div><div class="reason">${z.reason}</div></article>`).join('');
+  document.getElementById('status').innerHTML = `<span class="pill">${escapeHtml(data.zones.length)} zones</span><span class="pill warn">${escapeHtml(active)} would run</span><span class="pill ${mismatches ? 'bad' : 'good'}">${escapeHtml(mismatches)} mismatches</span>`;
+  document.getElementById('zones').innerHTML = data.zones.map(z => `<article class="card"><h2>${escapeHtml(data.house_code)} ${escapeHtml(String(z.zone_id ?? '').toUpperCase())} <span class="${cls(z)}">${escapeHtml(z.mode)}</span></h2><div class="metric"><span class="key">would run</span><span class="value ${z.should_run ? 'warn' : 'good'}">${z.should_run ? 'yes' : 'no'}</span></div><div class="metric"><span class="key">actual fan</span><span class="value">${z.fan_on ? 'on' : 'off'}</span></div><div class="metric"><span class="key">abs humidity</span><span class="value">${escapeHtml(fmt(z.absolute_humidity, ' g/m3'))}</span></div><div class="metric"><span class="key">delta</span><span class="value">${escapeHtml(fmt(z.delta_absolute_humidity, ' g/m3'))}</span></div><div class="metric"><span class="key">rate</span><span class="value">${escapeHtml(fmt(z.rate_gm3_per_min, ' g/m3/min'))}</span></div><div class="reason">${escapeHtml(z.reason)}</div></article>`).join('');
   const summaries = (data.daily_summaries || []).slice(0, 24);
-  document.getElementById('summaries').innerHTML = summaries.length ? summaries.map(s => { const m = s.metrics || {}; const worse = (m.would_be_worse_than_current_system || 0) + (m.dangerous_miss_candidates || 0); const tone = worse ? 'bad' : m.would_improve_current_system ? 'warn' : 'good'; return `<div class="event"><span>${s.day}</span><span>${s.zone_id.toUpperCase()}</span><span class="${tone}">daily</span><span class="reason">better ${m.would_improve_current_system || 0} · worse ${worse} · blockers ${m.hard_safety_blockers || 0} · low-delta risk ${m.false_positive_candidates || 0} · max delta ${fmt(m.max_delta_absolute_humidity, ' g/m3')} · max RH ${fmt(m.max_relative_humidity, '%')}</span></div>`; }).join('') : '<div class="empty">No daily observer summary recorded yet.</div>';
+  document.getElementById('summaries').innerHTML = summaries.length ? summaries.map(s => { const m = s.metrics || {}; const worse = (m.would_be_worse_than_current_system || 0) + (m.dangerous_miss_candidates || 0); const tone = worse ? 'bad' : m.would_improve_current_system ? 'warn' : 'good'; return `<div class="event"><span>${escapeHtml(s.day)}</span><span>${escapeHtml(String(s.zone_id ?? '').toUpperCase())}</span><span class="${tone}">daily</span><span class="reason">better ${escapeHtml(m.would_improve_current_system || 0)} · worse ${escapeHtml(worse)} · blockers ${escapeHtml(m.hard_safety_blockers || 0)} · low-delta risk ${escapeHtml(m.false_positive_candidates || 0)} · max delta ${escapeHtml(fmt(m.max_delta_absolute_humidity, ' g/m3'))} · max RH ${escapeHtml(fmt(m.max_relative_humidity, '%'))}</span></div>`; }).join('') : '<div class="empty">No daily observer summary recorded yet.</div>';
   const events = (data.recent_events || []).slice(0,20);
-  document.getElementById('events').innerHTML = events.length ? events.map(e => `<div class="event"><span>${e.ts}</span><span>${e.zone_id.toUpperCase()}</span><span class="accent">${e.kind}</span><span class="reason">${e.payload.reason || e.payload.mode}</span></div>`).join('') : '<div class="empty">No observer events recorded yet.</div>';
+  document.getElementById('events').innerHTML = events.length ? events.map(e => `<div class="event"><span>${escapeHtml(e.ts)}</span><span>${escapeHtml(String(e.zone_id ?? '').toUpperCase())}</span><span class="accent">${escapeHtml(e.kind)}</span><span class="reason">${escapeHtml(e.payload.reason || e.payload.mode)}</span></div>`).join('') : '<div class="empty">No observer events recorded yet.</div>';
 }
 load(); setInterval(load, 30000);
 </script>

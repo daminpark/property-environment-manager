@@ -67,6 +67,78 @@ class EventStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_summaries_day ON daily_summaries(day)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS store_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """)
+            self._redact_legacy_calendar_data(conn)
+
+    def _redact_legacy_calendar_data(self, conn: sqlite3.Connection) -> None:
+        migration_key = "calendar_privacy_redaction_v1"
+        completed = conn.execute(
+            "SELECT 1 FROM store_metadata WHERE key = ?", (migration_key,)
+        ).fetchone()
+        if completed:
+            return
+
+        for table in ("events", "samples"):
+            rows = conn.execute(f"SELECT id, payload_json FROM {table}").fetchall()
+            for row_id, payload_json in rows:
+                try:
+                    payload = json.loads(payload_json)
+                except (TypeError, json.JSONDecodeError):
+                    conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+                    continue
+                if not isinstance(payload, dict):
+                    conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+                    continue
+                sanitized = self._redact_calendar_payload(payload)
+                conn.execute(
+                    f"UPDATE {table} SET payload_json = ? WHERE id = ?",
+                    (json.dumps(sanitized, sort_keys=True), row_id),
+                )
+
+        conn.execute(
+            "INSERT INTO store_metadata(key, value) VALUES (?, ?)",
+            (migration_key, datetime.now(UTC).isoformat()),
+        )
+
+    def _redact_calendar_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        summary_keys = {"calendar_policy_event_summary", "event_summary"}
+        summaries: set[str] = set()
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in summary_keys and isinstance(child, str) and child:
+                        summaries.add(child)
+                    collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(payload)
+
+        def sanitize(value: Any, *, key: str | None = None) -> Any:
+            if key in summary_keys:
+                return None
+            if isinstance(value, dict):
+                return {
+                    str(child_key): sanitize(child, key=str(child_key))
+                    for child_key, child in value.items()
+                }
+            if isinstance(value, list):
+                return [sanitize(child) for child in value]
+            if isinstance(value, str) and key in {"reason", "calendar_policy_reason"}:
+                for summary in sorted(summaries, key=len, reverse=True):
+                    value = value.replace(
+                        f" for {summary}", " for a calendar event"
+                    )
+            return value
+
+        return sanitize(payload)
 
     def record_run(self, decisions: Iterable[Any], *, run_at: datetime) -> None:
         rows: list[tuple[str, str, str, str, str]] = []
@@ -75,7 +147,7 @@ class EventStore:
         run_at_utc = run_at.astimezone(UTC)
         ts = run_at_utc.isoformat()
         for decision in decisions:
-            payload = self._payload(decision)
+            payload = self._redact_calendar_payload(self._payload(decision))
             zone_id = str(payload.get("zone_id", "unknown"))
             summaries[zone_id] = self._merge_metrics(
                 summaries.get(zone_id, {}), self._summary_delta(zone_id, payload)
@@ -212,6 +284,7 @@ class EventStore:
             zone_id == "z"
             and drying_boost
             and climate_available
+            and boiler_available
             and not sensor_stale
             and not window_open_risk
             and not heating_ineffective

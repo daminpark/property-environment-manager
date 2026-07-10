@@ -213,17 +213,33 @@ class VentilationController:
         now = datetime.now(UTC)
         decisions: list[ZoneDecision] = []
         for zone in self.settings.zones:
-            snapshot = self._snapshot(zone, states, now)
-            decision = self.evaluate(snapshot)
+            try:
+                snapshot = self._snapshot(zone, states, now)
+                decision = self.evaluate(snapshot)
+            except Exception as exc:
+                self.control_errors[zone.zone_id] = (
+                    f"evaluation {type(exc).__name__}: {exc}"
+                )
+                LOGGER.exception("Failed to evaluate ventilation zone %s", zone.zone_id)
+                continue
             decisions.append(decision)
-            await self._publish_diagnostics(ha, snapshot, decision)
+            try:
+                await self._publish_diagnostics(ha, snapshot, decision)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to publish diagnostics for ventilation zone %s",
+                    zone.zone_id,
+                )
             try:
                 await self._apply_decision(ha, snapshot, decision)
                 self.control_errors.pop(zone.zone_id, None)
             except Exception as exc:
                 self.control_errors[zone.zone_id] = f"{type(exc).__name__}: {exc}"
                 LOGGER.exception("Fan command failed for zone %s", zone.zone_id)
-        await self._publish_health(ha, decisions)
+        try:
+            await self._publish_health(ha, decisions)
+        except Exception:
+            LOGGER.exception("Failed to publish ventilation manager health")
         self.last_decisions = decisions
         self.last_run_at = now
         self.save_state()
@@ -273,7 +289,7 @@ class VentilationController:
             return self._no_baseline_decision(snapshot, runtime, rate)
 
         moisture_rising = self._moisture_rising(delta, rate, snapshot.relative_humidity)
-        active_event = runtime.mode in {"drying", "moisture_rising"}
+        active_event = runtime.humidity_event_started_at is not None
 
         if not active_event and moisture_rising:
             runtime.mode = "moisture_rising"
@@ -352,32 +368,34 @@ class VentilationController:
 
         relative_humidity = as_float(rh)
         temperature_c = as_float(temp)
-        absolute_humidity = as_float(abs_humidity)
-        if absolute_humidity is None and relative_humidity is not None and temperature_c is not None:
+        direct_absolute_humidity = as_float(abs_humidity)
+        absolute_humidity = direct_absolute_humidity
+        rh_ts = parse_ha_timestamp(rh.last_updated if rh else None)
+        temp_ts = parse_ha_timestamp(temp.last_updated if temp else None)
+        abs_humidity_ts = parse_ha_timestamp(
+            abs_humidity.last_updated if abs_humidity else None
+        )
+        if direct_absolute_humidity is not None:
+            contributing_timestamps = (rh_ts, abs_humidity_ts)
+        elif relative_humidity is not None and temperature_c is not None:
             absolute_humidity = round(
                 absolute_humidity_gm3(relative_humidity, temperature_c), 2
             )
+            contributing_timestamps = (rh_ts, temp_ts)
+        else:
+            contributing_timestamps = ()
 
-        humidity_ts = parse_ha_timestamp(rh.last_updated if rh else None)
-        if zone.change_only_sensor:
+        if zone.change_only_sensor and direct_absolute_humidity is not None:
             # A derived absolute-humidity entity can look fresh merely because
             # temperature changed. For sparse sensors, the source RH timestamp
             # is the only honest indication that moisture was sampled again.
-            sample_ts = humidity_ts
+            sample_ts = rh_ts
         else:
-            sample_ts = max(
-                (
-                    ts
-                    for ts in (
-                        humidity_ts,
-                        parse_ha_timestamp(temp.last_updated if temp else None),
-                        parse_ha_timestamp(
-                            abs_humidity.last_updated if abs_humidity else None
-                        ),
-                    )
-                    if ts is not None
-                ),
-                default=None,
+            sample_ts = (
+                min(contributing_timestamps)
+                if contributing_timestamps
+                and all(ts is not None for ts in contributing_timestamps)
+                else None
             )
 
         return ZoneSnapshot(
@@ -515,6 +533,22 @@ class VentilationController:
             runtime.last_reason = "no safe baseline yet; RH is above high-humidity guard"
             return self._decision(
                 snapshot, runtime, True, "keep_on", runtime.last_reason, rate
+            )
+        if runtime.humidity_event_started_at is not None:
+            if not self._minimum_runtime_elapsed(runtime, snapshot):
+                runtime.last_reason = (
+                    "RH recovered without a baseline; completing minimum fan runtime"
+                )
+                return self._decision(
+                    snapshot, runtime, True, "keep_on", runtime.last_reason, rate
+                )
+            runtime.humidity_event_started_at = None
+            runtime.fan_commanded_on_at = None
+            runtime.event_baseline_absolute_humidity = None
+            runtime.peak_absolute_humidity = None
+            runtime.last_reason = "RH recovered before a safe baseline was learned"
+            return self._decision(
+                snapshot, runtime, False, "turn_off", runtime.last_reason, rate
             )
         runtime.last_reason = "learning baseline from stable humidity"
         return self._decision(snapshot, runtime, False, "none", runtime.last_reason, rate)

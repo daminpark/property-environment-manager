@@ -2,36 +2,88 @@
 
 [![Checks](https://github.com/daminpark/property-environment-manager/actions/workflows/checks.yml/badge.svg)](https://github.com/daminpark/property-environment-manager/actions/workflows/checks.yml)
 
-Observer-first Home Assistant add-on for humidity ventilation and TRV heating
-policy.
+A Home Assistant add-on for running damp and heating automation as an
+operational review loop before it is trusted with real devices.
 
-This is a practical property-operations automation project: it watches humidity,
-heating, calendar, and room-state signals, explains what it would do, and only
-touches real devices after explicit active-control gates are enabled. I built it
-to replace fragile one-off automations with something observable, staged, and
-reviewable before trusting it with physical controls.
+I built this around a real small-property setup where rooms change state for
+ordinary reasons: showers, cooking, laundry, guest stays, service rooms, open
+windows, stale sensors, and manual overrides. The useful question is not only
+"can Home Assistant switch something?", but "would this decision have been
+right, why, and is it safe to let it write next time?"
 
-## What It Does
+![Synthetic dashboard screenshot](demo/dashboard-synthetic.jpg)
 
-- Detects bathroom, toilet, and kitchen humidity events using absolute humidity,
-  learned baselines, rise rates, stale-sensor checks, and minimum run-time rules.
-- Observes TRV heating behaviour for guest rooms, service rooms, and a drying
-  room, including suspected open windows, ineffective heating, child-lock drift,
-  force-heat recovery, and drying-room humidity boosts.
-- Mirrors calendar-based heating policy in observer mode before calendar writes
-  are allowed.
-- Publishes Home Assistant diagnostic entities, a read-only ingress dashboard,
-  and JSON status APIs for review.
-- Writes local SQLite event, sample, and daily-summary logs so rollout decisions
-  can be based on observed behaviour rather than a single incident.
-- Includes migration and sanitisation tools for carrying forward old observer
-  logs without publishing raw private data.
+The screenshot is synthetic and redacted, but it shows the intended experience:
+one place to see what is damp, what is heating, what the automation would do,
+whether the real device agrees, and whether recent observations look safe enough
+to promote.
 
-## Current Status
+## What It Helps With
 
-This is a personal, working add-on rather than a packaged commercial product.
-The combined add-on is at `0.1.0`; the two controller modules came from earlier
-standalone add-ons and are intentionally still easy to review independently.
+- Reviewing humidity and heating state across the property without opening
+  several Home Assistant dashboards.
+- Seeing the reason for each recommendation, not just the resulting target or
+  fan state.
+- Comparing "would run" decisions with the real fan or TRV state while still in
+  observer mode.
+- Catching stale sensors, unavailable TRVs, child-lock drift, HVAC mode drift,
+  and rooms that are not warming as expected.
+- Keeping guest and service-room heating policy visible before letting the add-on
+  enforce it.
+- Using daily evidence to decide which automations are ready for active control.
+
+## Who It Is For
+
+This is for a Home Assistant-managed property where environmental automation has
+to coexist with guests, service rooms, manual overrides, and imperfect sensors.
+It is especially useful when the operator wants to inspect decisions before
+giving an automation authority over fans or TRVs (thermostatic radiator valves).
+
+## Product Workflows
+
+### Review the property from one screen
+
+The combined dashboard shows ventilation, TRV heating, and calendar policy
+together. Each room card gives the current mode, the suggested action, the
+current device state, and the reason in plain operational terms. The status pills
+at the top make the rollout state visible: ventilation active or observer, TRV
+active or observer, and calendar policy off, observed, or active.
+
+### Handle moisture without brittle timers
+
+The ventilation controller watches absolute humidity, learned room baselines,
+rise rate, relative humidity, stale readings, and minimum run time. A shower or
+kitchen spike can become a "would run" recommendation before any write is
+enabled. In observer mode, the app records whether the actual fan was already on
+or whether the automation would have acted differently.
+
+The product decision here is deliberate: a damp room should not be reduced to a
+fixed timer, and a stale high reading should not blindly start a fan.
+
+### Watch heating quality, not just setpoints
+
+The TRV side looks for practical heating problems: a drying room that needs a
+temporary higher target, a room that is calling for heat but not warming, a TRV
+stuck out of heat mode, a child lock that has drifted, or a target that has been
+changed outside the expected policy. These are treated as observations first,
+with write access kept behind explicit switches.
+
+### Keep guest and service policy reviewable
+
+Calendar policy is mirrored before it is allowed to control devices. The app can
+observe check-in and checkout target changes, occupied and vacant states, guest
+target bounds, service-room defaults, and renovation-mode suppression. This keeps
+booking-related heating behaviour inspectable without publishing booking names or
+raw calendar details.
+
+### Promote only after evidence
+
+The add-on starts in observer mode. Daily summaries group observations into
+signals such as "would improve current system", "would be worse", and "hard
+safety blockers". The point is to make rollout boring: observe, compare, fix the
+edge cases, then enable only the write path that has earned trust.
+
+## Safety Model
 
 Default installation is observer-only:
 
@@ -52,61 +104,55 @@ evening-air-out, and drying-room routines remain Home Assistant-owned during the
 first staged cutover. The dashboard reports these ownership requirements rather
 than claiming full replacement readiness.
 
-## Demo
+That separation creates four promotion stages: ventilation, drying-room TRV
+control, boiler control, and the shared calendar-policy group (calendar
+transitions, guest limits, service defaults, force-heat recovery, and child-lock
+restoration).
 
-The demo artifacts are synthetic and redacted. They are meant to show the shape
-of the diagnostics without exposing a real property, booking, token, or Home
-Assistant entity namespace.
+## Demo And Review
 
-![Synthetic dashboard screenshot](demo/dashboard-synthetic.jpg)
+The public demo files are synthetic. They are meant to show the shape of the
+product without exposing a real property, booking, token, or Home Assistant
+entity namespace.
 
 - [Synthetic status payload](demo/status.json)
 - [Architecture note](docs/architecture.md)
 - [Privacy and safety note](docs/privacy-and-safety.md)
 
-## Quick Review Path
+For a fast review, start with the screenshot, then skim the synthetic status
+payload to see the same decisions as data. For a deeper review, read the tests
+around humidity events, TRV policy, calendar mapping, event summaries, migration,
+and sanitisation.
 
-For a fast read, start here:
+## What The Demo Shows
 
-1. Read this first screen and the safety model above.
-2. Skim [docs/architecture.md](docs/architecture.md) for the data flow and
-   active-control gates.
-3. Inspect `property_environment_manager/src/ventilation_manager/controller.py`
-   and `property_environment_manager/src/trv_regulator/controller.py` for the
-   decision state machines.
-4. Check `tests/` for the humidity, TRV, calendar-policy, event-store, migration,
-   and sanitisation cases.
-5. Review [docs/privacy-and-safety.md](docs/privacy-and-safety.md) before looking
-   at any logs or examples.
+The current screenshot is the right first image because it compresses several
+workflows into one view:
 
-## Repository Shape
+- A moisture event where the app would run a fan but the actual fan is off.
+- A drying-room TRV recommendation with a suggested temporary target.
+- An occupied guest room where manual target changes remain allowed within the
+  policy range.
+- Daily evidence rows that show better, worse, and blocker counts.
+- Demo entity names and redacted calendar information instead of private
+  deployment details.
 
-```text
-property_environment_manager/
-  config.yaml                 Home Assistant add-on options
-  run.sh                      add-on environment mapping
-  src/
-    property_environment_manager/
-      main.py                 combined runner
-      web.py                  combined read-only dashboard/API
-    ventilation_manager/      humidity/fan controller
-    trv_regulator/            heating/TRV controller
-demo/
-  status.json                 synthetic combined API payload
-  dashboard-synthetic.jpg     screenshot generated from synthetic data
-docs/
-  architecture.md
-  privacy-and-safety.md
-tools/
-  migrate_legacy_logs.py      imports old observer SQLite logs
-  sanitize_sqlite.py          creates redacted SQLite copies
-tests/
-```
+## What This Is Not
 
-The combined runner deliberately avoids merging the controller internals. Each
-subsystem keeps its own configuration, runtime state, database, tests, and
-active-control switch, while the add-on process coordinates them under one
-dashboard.
+This is not a general-purpose smart-home platform, a commercial product, or an
+"AI automation" wrapper. It is a practical Home Assistant add-on extracted from
+real property operations. The AI signal is in the workflow: I use coding agents
+for review, refactoring pressure tests, documentation passes, and checklist-style
+verification, while keeping the product boundaries, safety model, and rollout
+decisions mine.
+
+## Public Boundary
+
+No raw production databases, booking names, tokens, IP addresses, or real
+calendar details should be committed. Some tests and sanitisation rules still
+refer to legacy numeric house/entity patterns because the add-on came from a
+real deployment. Public examples should use the synthetic demo namespace or be
+sanitised and manually reviewed.
 
 ## Development
 
@@ -121,7 +167,7 @@ python3 -m compileall -q property_environment_manager/src tests tools
 ```
 
 The project targets Python 3.12+ because the Home Assistant add-on image uses
-Python 3.12.
+Python 3.12. CI runs the same test and compile checks.
 
 ## Diagnostics
 
@@ -173,13 +219,6 @@ The combined add-on uses SQLite's online backup API to create consistent `/data`
 copies, runs `integrity_check`, and records one-time import markers. It refuses
 to overwrite a database that the combined add-on has already created.
 
-## Home Assistant Notifications
-
-The add-on publishes health entities but intentionally leaves notification
-routing to Home Assistant. A reusable, rate-limited package for manager
-heartbeats and property-device availability is documented in
-[`docs/device-health.md`](docs/device-health.md).
-
 For public examples or external review, create redacted copies:
 
 ```bash
@@ -192,18 +231,9 @@ The sanitizer removes or generalises common private fields such as booking
 summaries, guest names, bearer tokens, IP addresses, and house-specific entity
 prefixes. Sanitized output should still be reviewed before publishing.
 
-## Agent-Assisted Workflow
+## Home Assistant Notifications
 
-I use coding agents as part of the workflow for review, refactoring pressure
-tests, documentation passes, and checklist-style verification. The product
-boundaries, safety model, staged rollout, and final architecture decisions remain
-mine. In this repo, the important signal is not "AI built it"; it is that the
-automation is observable enough for humans and agents to inspect before it is
-trusted.
-
-## Public Boundary
-
-Some tests and sanitisation rules refer to legacy numeric house/entity patterns
-because the add-on was extracted from a real deployment. The demo artifacts use
-a synthetic namespace, and any real logs should be sanitised and manually
-reviewed before sharing.
+The add-on publishes health entities but intentionally leaves notification
+routing to Home Assistant. A reusable, rate-limited package for manager
+heartbeats and property-device availability is documented in
+[`docs/device-health.md`](docs/device-health.md).

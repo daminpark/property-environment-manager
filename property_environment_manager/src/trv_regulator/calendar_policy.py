@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -26,6 +27,7 @@ class ZoneCalendarPolicy:
     active_booking: bool
     calendar_entity_id: str | None = None
     event_summary: str | None = None
+    transition_id: str | None = None
     suppressed_by_renovation: bool = False
 
 
@@ -35,7 +37,6 @@ class CalendarWindow:
 
     entity_id: str
     zone_ids: tuple[str, ...]
-    summary: str
     checkin_at: datetime
     checkout_at: datetime
 
@@ -138,11 +139,11 @@ class CalendarPolicyEvaluator:
                 hvac_mode="heat",
                 reason=(
                     f"{window.entity_id} {kind} trigger would set heat to "
-                    f"{target:.1f}C for {window.summary or 'calendar event'}"
+                    f"{target:.1f}C for a calendar event"
                 ),
                 active_booking=kind == "checkin",
                 calendar_entity_id=window.entity_id,
-                event_summary=window.summary,
+                transition_id=self._transition_id(window, kind),
             )
 
         active = self._active_window(matching)
@@ -151,8 +152,8 @@ class CalendarPolicyEvaluator:
                 zone_id=zone_id,
                 calendar_state="calendar_occupied",
                 baseline_target_temperature_c=self.settings.calendar_checkin_target_c,
-                trigger_action="none",
-                trigger_target_temperature_c=None,
+                trigger_action="would_set_calendar_checkin_target",
+                trigger_target_temperature_c=self.settings.calendar_checkin_target_c,
                 hvac_mode=None,
                 reason=(
                     f"{active.entity_id} is active; guest target changes within "
@@ -161,18 +162,35 @@ class CalendarPolicyEvaluator:
                 ),
                 active_booking=True,
                 calendar_entity_id=active.entity_id,
-                event_summary=active.summary,
+                transition_id=self._transition_id(active, "checkin"),
             )
 
+        latest_checkout = self._latest_checkout(matching)
         return ZoneCalendarPolicy(
             zone_id=zone_id,
             calendar_state="calendar_vacant",
             baseline_target_temperature_c=self.settings.calendar_checkout_target_c,
-            trigger_action="none",
-            trigger_target_temperature_c=None,
+            trigger_action=(
+                "would_set_calendar_checkout_target"
+                if latest_checkout is not None
+                else "none"
+            ),
+            trigger_target_temperature_c=(
+                self.settings.calendar_checkout_target_c
+                if latest_checkout is not None
+                else None
+            ),
             hvac_mode=None,
             reason="no active calendar booking; HA checkout triggers leave guest rooms at 14C",
             active_booking=False,
+            calendar_entity_id=(
+                latest_checkout.entity_id if latest_checkout is not None else None
+            ),
+            transition_id=(
+                self._transition_id(latest_checkout, "checkout")
+                if latest_checkout is not None
+                else None
+            ),
         )
 
     def _service_policy(
@@ -216,7 +234,11 @@ class CalendarPolicyEvaluator:
                     candidates.append((trigger_at, window, kind))
         if not candidates:
             return None
-        _, window, kind = max(candidates, key=lambda item: item[0])
+        # At a back-to-back boundary, preserving the arriving booking is safer
+        # than applying the departing booking's checkout target.
+        _, window, kind = max(
+            candidates, key=lambda item: (item[0], item[2] == "checkin")
+        )
         return window, kind
 
     def _active_window(self, windows: list[CalendarWindow]) -> CalendarWindow | None:
@@ -226,6 +248,18 @@ class CalendarPolicyEvaluator:
         if not active:
             return None
         return min(active, key=lambda window: window.checkout_at)
+
+    def _latest_checkout(self, windows: list[CalendarWindow]) -> CalendarWindow | None:
+        completed = [window for window in windows if window.checkout_at <= self.now]
+        if not completed:
+            return None
+        return max(completed, key=lambda window: window.checkout_at)
+
+    def _transition_id(self, window: CalendarWindow, kind: str) -> str:
+        transition_at = window.checkin_at if kind == "checkin" else window.checkout_at
+        material = f"{window.entity_id}|{kind}|{transition_at.isoformat()}".encode()
+        digest = hashlib.sha256(material).hexdigest()[:16]
+        return f"calendar-transition-{digest}"
 
     def _windows_from_events(
         self, events_by_entity: dict[str, list[dict[str, Any]]]
@@ -242,22 +276,25 @@ class CalendarPolicyEvaluator:
                 )
                 if self._ignore_summary(summary):
                     continue
-                start = self._parse_event_time(event.get("start"), tz)
-                end = self._parse_event_time(event.get("end"), tz)
+                start = self._parse_event_time(
+                    event.get("start"), tz, all_day_hour=14
+                )
+                end = self._parse_event_time(event.get("end"), tz, all_day_hour=11)
                 if start is None or end is None or end <= start:
                     continue
                 windows.append(
                     CalendarWindow(
                         entity_id=entity_id,
                         zone_ids=zone_ids,
-                        summary=summary,
-                        checkin_at=start + timedelta(hours=14),
-                        checkout_at=end + timedelta(hours=11),
+                        checkin_at=start,
+                        checkout_at=end,
                     )
                 )
         return windows
 
-    def _parse_event_time(self, value: Any, tz: ZoneInfo) -> datetime | None:
+    def _parse_event_time(
+        self, value: Any, tz: ZoneInfo, *, all_day_hour: int
+    ) -> datetime | None:
         if value is None:
             return None
         if isinstance(value, dict):
@@ -268,7 +305,9 @@ class CalendarPolicyEvaluator:
         try:
             if len(text) == 10:
                 parsed_date = datetime.fromisoformat(text).date()
-                return datetime.combine(parsed_date, time.min, tzinfo=tz).astimezone(UTC)
+                return datetime.combine(
+                    parsed_date, time(hour=all_day_hour), tzinfo=tz
+                ).astimezone(UTC)
             dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
             return None

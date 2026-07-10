@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -125,6 +126,39 @@ def test_drying_room_recommends_severe_target_for_high_absolute_humidity(
 
     assert decision.mode == "drying_severe"
     assert decision.suggested_target_temperature_c == 26.0
+
+
+def test_drying_boost_yields_to_window_open_risk(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 5, 29, 10, 0, tzinfo=UTC)
+
+    regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            room_temp=20.0,
+            target=24.0,
+            hvac_action="heating",
+            boiler_on=True,
+            absolute_humidity=16.5,
+        )
+    )
+    decision = regulator.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=30),
+            room_temp=19.3,
+            target=24.0,
+            hvac_action="heating",
+            boiler_on=True,
+            absolute_humidity=16.5,
+        )
+    )
+
+    assert decision.mode == "suspected_window_open"
+    assert decision.window_open_risk is True
+    assert decision.suggested_action == "would_turn_off_and_retry_later"
 
 
 def test_drying_room_holds_base_target_when_recovered(tmp_path: Path) -> None:
@@ -395,6 +429,38 @@ def test_calendar_checkout_trigger_maps_whole_home_to_local_house(tmp_path: Path
     assert policy.trigger_target_temperature_c == 14.0
 
 
+def test_back_to_back_calendar_boundary_prefers_arriving_booking(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    now = datetime(2026, 6, 3, 12, 1, tzinfo=UTC)
+
+    policy = calendar_policy(
+        settings,
+        now,
+        "1",
+        {
+            "calendar.193_1_calendar": [
+                {
+                    "start": "2026-06-01T12:00:00Z",
+                    "end": "2026-06-03T12:00:00Z",
+                    "summary": "Departing booking",
+                },
+                {
+                    "start": "2026-06-03T12:00:00Z",
+                    "end": "2026-06-05T12:00:00Z",
+                    "summary": "Arriving booking",
+                },
+            ]
+        },
+    )
+
+    assert policy is not None
+    assert policy.calendar_state == "calendar_checkin_trigger"
+    assert policy.trigger_action == "would_set_calendar_checkin_target"
+    assert policy.trigger_target_temperature_c == 18.0
+
+
 def test_calendar_policy_ignores_blocked_events(tmp_path: Path) -> None:
     settings = make_settings(tmp_path)
     now = datetime(2026, 6, 3, 15, 0, tzinfo=UTC)
@@ -435,17 +501,37 @@ def test_guest_in_range_manual_target_is_not_reset_during_booking(tmp_path: Path
         },
     )
 
-    decision = regulator.evaluate(
+    initial = regulator.evaluate(
         snapshot(
             settings,
             now,
-            target=21.0,
+            target=18.0,
             absolute_humidity=None,
             relative_humidity=None,
         ),
         policy,
     )
+    decision = regulator.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=1),
+            target=21.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        calendar_policy(
+            settings,
+            now + timedelta(minutes=1),
+            "1",
+            {
+                "calendar.193_1_calendar": [
+                    {"start": "2026-06-03", "end": "2026-06-05", "summary": "Room 1"}
+                ]
+            },
+        ),
+    )
 
+    assert initial.suggested_action == "none"
     assert decision.suggested_action == "none"
     assert decision.calendar_policy_state == "calendar_occupied"
     assert decision.calendar_policy_target_temperature_c == 18.0
@@ -671,6 +757,30 @@ def test_boiler_shadow_treats_missing_hvac_action_as_unknown_demand(
     assert decision.control_safe is False
 
 
+def test_boiler_shadow_treats_missing_zone_decision_as_unknown_demand(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    second_zone = replace(
+        settings.zones[0],
+        zone_id="1",
+        display_name="193 1",
+        climate_entity="climate.193_1_trv",
+    )
+    settings = replace(settings, zones=(*settings.zones, second_zone))
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
+    idle = regulator.evaluate(snapshot(settings, now, hvac_action="idle", boiler_on=True))
+
+    decision = regulator._boiler_decision(
+        [idle], boiler_on=True, boiler_available=True
+    )
+
+    assert decision.suggested_action == "blocked_turn_off_trv_unavailable"
+    assert decision.control_safe is False
+    assert decision.unavailable_zone_ids == ("1",)
+
+
 def test_boiler_shadow_can_turn_on_for_known_demand_with_an_unavailable_trv(
     tmp_path: Path,
 ) -> None:
@@ -805,3 +915,308 @@ def test_observer_run_publishes_boiler_policy_without_device_writes(
     assert f"sensor.{settings.house_code}_trv_regulator_health" in published_ids
     assert f"sensor.{settings.house_code}_z_trv_regulator_heating_ineffective" in published_ids
     assert all(item[2]["active_control"] is False for item in fake.published)
+
+
+def test_late_checkin_reconciles_once_then_allows_guest_changes(
+    tmp_path: Path,
+) -> None:
+    zone = ZoneConfig(
+        zone_id="1",
+        display_name="193 1",
+        climate_entity="climate.193_1_trv",
+        room_temperature_entity="sensor.193_1_thermometer_temperature",
+    )
+    settings = make_settings(tmp_path, zone)
+    regulator = TRVRegulator(settings)
+    events = {
+        "calendar.193_1_calendar": [
+            {"start": "2026-06-03", "end": "2026-06-05", "summary": "Room 1"}
+        ]
+    }
+    now = datetime(2026, 6, 3, 15, 0, tzinfo=UTC)
+
+    policy = calendar_policy(settings, now, "1", events)
+    assert policy is not None
+    assert policy.calendar_state == "calendar_occupied"
+    assert policy.transition_id is not None
+    decision = regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            target=14.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        policy,
+    )
+    assert decision.suggested_action == "would_set_calendar_checkin_target"
+
+    still_pending = regulator.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(seconds=30),
+            target=14.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        calendar_policy(settings, now + timedelta(seconds=30), "1", events),
+    )
+    assert still_pending.suggested_action == "would_set_calendar_checkin_target"
+
+    matched = regulator.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=1),
+            target=18.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        calendar_policy(settings, now + timedelta(minutes=1), "1", events),
+    )
+    assert matched.suggested_action == "none"
+    assert matched.calendar_policy_action == "none"
+    assert regulator.runtimes["1"].completed_calendar_transition_id == policy.transition_id
+
+    manual_change = regulator.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=2),
+            target=21.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        calendar_policy(settings, now + timedelta(minutes=2), "1", events),
+    )
+    assert manual_change.suggested_action == "none"
+    assert manual_change.calendar_policy_action == "none"
+
+
+def test_late_checkout_remains_pending_until_target_matches(tmp_path: Path) -> None:
+    zone = ZoneConfig(
+        zone_id="1",
+        display_name="193 1",
+        climate_entity="climate.193_1_trv",
+        room_temperature_entity="sensor.193_1_thermometer_temperature",
+    )
+    settings = make_settings(tmp_path, zone)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    policy = calendar_policy(
+        settings,
+        now,
+        "1",
+        {
+            "calendar.193_1_calendar": [
+                {
+                    "start": "2026-06-03",
+                    "end": "2026-06-05",
+                    "summary": "Room 1",
+                }
+            ]
+        },
+    )
+
+    assert policy is not None
+    assert policy.calendar_state == "calendar_vacant"
+    assert policy.transition_id is not None
+    decision = regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            target=21.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        policy,
+    )
+
+    assert decision.suggested_action == "would_set_calendar_checkout_target"
+    assert decision.suggested_target_temperature_c == 14.0
+
+
+def test_late_checkin_does_not_accept_out_of_policy_target(tmp_path: Path) -> None:
+    zone = ZoneConfig(
+        zone_id="1",
+        display_name="193 1",
+        climate_entity="climate.193_1_trv",
+        room_temperature_entity="sensor.193_1_thermometer_temperature",
+    )
+    settings = make_settings(tmp_path, zone)
+    now = datetime(2026, 6, 3, 15, 0, tzinfo=UTC)
+    events = {
+        "calendar.193_1_calendar": [
+            {"start": "2026-06-03", "end": "2026-06-05", "summary": "Room 1"}
+        ]
+    }
+    policy = calendar_policy(settings, now, "1", events)
+    assert policy is not None
+
+    for target in (13.0, 25.0):
+        regulator = TRVRegulator(settings)
+        decision = regulator.evaluate(
+            snapshot(
+                settings,
+                now,
+                target=target,
+                absolute_humidity=None,
+                relative_humidity=None,
+            ),
+            policy,
+        )
+        assert decision.suggested_action == "would_set_calendar_checkin_target"
+
+
+def test_late_checkin_reconciles_before_accepting_in_range_guest_target(
+    tmp_path: Path,
+) -> None:
+    zone = ZoneConfig(
+        zone_id="1",
+        display_name="193 1",
+        climate_entity="climate.193_1_trv",
+        room_temperature_entity="sensor.193_1_thermometer_temperature",
+    )
+    settings = make_settings(tmp_path, zone)
+    regulator = TRVRegulator(settings)
+    now = datetime(2026, 6, 3, 15, 0, tzinfo=UTC)
+    policy = calendar_policy(
+        settings,
+        now,
+        "1",
+        {
+            "calendar.193_1_calendar": [
+                {"start": "2026-06-03", "end": "2026-06-05", "summary": "Room 1"}
+            ]
+        },
+    )
+
+    assert policy is not None
+    decision = regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            target=20.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        policy,
+    )
+
+    assert decision.suggested_action == "would_set_calendar_checkin_target"
+    assert regulator.runtimes["1"].completed_calendar_transition_id is None
+
+
+def test_completed_calendar_transition_survives_restart(tmp_path: Path) -> None:
+    zone = ZoneConfig(
+        zone_id="1",
+        display_name="193 1",
+        climate_entity="climate.193_1_trv",
+        room_temperature_entity="sensor.193_1_thermometer_temperature",
+    )
+    settings = make_settings(tmp_path, zone)
+    now = datetime(2026, 6, 5, 12, 0, tzinfo=UTC)
+    events = {
+        "calendar.193_1_calendar": [
+            {"start": "2026-06-03", "end": "2026-06-05", "summary": "Room 1"}
+        ]
+    }
+    policy = calendar_policy(settings, now, "1", events)
+    assert policy is not None
+    regulator = TRVRegulator(settings)
+
+    matched = regulator.evaluate(
+        snapshot(
+            settings,
+            now,
+            target=14.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        policy,
+    )
+    assert matched.suggested_action == "none"
+    regulator.save_state()
+
+    restarted = TRVRegulator(settings)
+    after_manual_change = restarted.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=5),
+            target=21.0,
+            absolute_humidity=None,
+            relative_humidity=None,
+        ),
+        calendar_policy(settings, now + timedelta(minutes=5), "1", events),
+    )
+
+    assert after_manual_change.suggested_action == "none"
+    assert after_manual_change.calendar_policy_action == "none"
+
+
+def test_legacy_runtime_reason_is_removed_on_load(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    marker = "Private Guest Name"
+    settings.state_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "zones": {
+                    "z": {
+                        "zone_id": "z",
+                        "samples": [],
+                        "last_mode": "calendar_checkin_trigger",
+                        "last_reason": f"calendar checkin for {marker}",
+                    }
+                },
+            }
+        )
+    )
+
+    TRVRegulator(settings)
+
+    rewritten = settings.state_path.read_text()
+    assert marker not in rewritten
+    assert "last_reason" not in json.loads(rewritten)["zones"]["z"]
+
+
+def test_calendar_policy_does_not_publish_event_summary(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    marker = '<img src=x onerror="alert(1)">'
+    now = datetime(2026, 6, 3, 13, 1, tzinfo=UTC)
+
+    policy = calendar_policy(
+        settings,
+        now,
+        "1",
+        {
+            "calendar.193_1_calendar": [
+                {"start": "2026-06-03", "end": "2026-06-05", "summary": marker}
+            ]
+        },
+    )
+
+    assert policy is not None
+    assert policy.event_summary is None
+    assert marker not in policy.reason
+    assert policy.transition_id is not None
+    assert "calendar." not in policy.transition_id
+    assert "2026" not in policy.transition_id
+
+
+def test_all_day_calendar_triggers_use_local_time_across_dst(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    now = datetime(2026, 3, 29, 13, 1, tzinfo=UTC)
+
+    policy = calendar_policy(
+        settings,
+        now,
+        "1",
+        {
+            "calendar.193_1_calendar": [
+                {"start": "2026-03-29", "end": "2026-03-31", "summary": "Room 1"}
+            ]
+        },
+    )
+
+    assert policy is not None
+    assert policy.calendar_state == "calendar_checkin_trigger"
+    assert policy.trigger_action == "would_set_calendar_checkin_target"

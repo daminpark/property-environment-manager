@@ -32,6 +32,14 @@ Do not commit:
 The repo includes `tools/sanitize_sqlite.py` for redacted copies, but sanitized
 output still needs a human review before publishing.
 
+At runtime, calendar titles are used only to ignore blocked events. They are not
+copied into Home Assistant diagnostics, status APIs, controller logs, or SQLite
+event payloads; calendar transitions use opaque identifiers instead.
+On upgrade, the add-on redacts titles from its existing TRV SQLite event and
+sample rows and removes legacy diagnostic reasons from its runtime state file.
+Historical attributes already retained by Home Assistant Recorder remain subject
+to the deployment's Recorder retention and purge policy.
+
 ## Public Examples
 
 Only publish synthetic or sanitized artifacts. The `demo/` directory is safe for

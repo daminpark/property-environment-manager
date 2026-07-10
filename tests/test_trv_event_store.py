@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 from trv_regulator.event_store import EventStore
+from tools.migrate_legacy_logs import ensure_schema
 
 
 def test_daily_summary_tracks_safe_drying_boost_candidates(tmp_path: Path) -> None:
@@ -132,6 +135,34 @@ def test_daily_summary_marks_worse_when_drying_boost_has_blockers(tmp_path: Path
     assert metrics["would_improve_current_system"] == 0
 
 
+def test_daily_summary_does_not_mark_boiler_blocked_drying_boost_safe(
+    tmp_path: Path,
+) -> None:
+    store = EventStore(tmp_path / "events.sqlite3")
+    store.record_run(
+        [
+            {
+                "zone_id": "z",
+                "mode": "drying_severe",
+                "suggested_action": "would_raise_drying_target",
+                "boiler_available": False,
+                "climate_available": True,
+                "sensor_stale": False,
+                "window_open_risk": False,
+                "heating_ineffective": False,
+            }
+        ],
+        run_at=datetime(2026, 7, 9, 10, 0, tzinfo=UTC),
+    )
+
+    metrics = store.daily_summaries()[0]["metrics"]
+    assert metrics["safe_drying_boost_candidates"] == 0
+    assert metrics["unsafe_drying_boost_candidates"] == 1
+    assert metrics["would_improve_current_system"] == 0
+    assert metrics["would_be_worse_than_current_system"] == 1
+    assert metrics["hard_safety_blockers"] == 1
+
+
 def test_daily_summary_records_blocked_unavailable_boiler(tmp_path: Path) -> None:
     store = EventStore(tmp_path / "events.sqlite3")
     run_at = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
@@ -161,3 +192,71 @@ def test_daily_summary_records_blocked_unavailable_boiler(tmp_path: Path) -> Non
     assert summary["metrics"]["boiler_unavailable_observations"] == 1
     assert summary["metrics"]["boiler_blocked_commands"] == 1
     assert summary["metrics"]["hard_safety_blockers"] == 1
+
+
+def test_existing_calendar_summaries_are_redacted_on_upgrade(tmp_path: Path) -> None:
+    path = tmp_path / "legacy-events.sqlite3"
+    summary = '<img src=x onerror="alert(1)"> Jane Example'
+    payload = {
+        "zone_id": "1",
+        "mode": "calendar_checkin_trigger",
+        "reason": f"calendar checkin would set heat for {summary}",
+        "calendar_policy_reason": f"calendar checkin would set heat for {summary}",
+        "calendar_policy_event_summary": summary,
+    }
+    with sqlite3.connect(path) as conn:
+        ensure_schema(conn)
+        conn.execute(
+            """
+            INSERT INTO events(ts, zone_id, kind, fingerprint, payload_json)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            ("2026-06-03T13:01:00+00:00", "1", "calendar", "fp", json.dumps(payload)),
+        )
+        conn.execute(
+            "INSERT INTO samples(ts, zone_id, payload_json) VALUES (?, ?, ?)",
+            ("2026-06-03T13:01:00+00:00", "1", json.dumps(payload)),
+        )
+        conn.commit()
+
+    store = EventStore(path)
+
+    event_payload = store.recent_events()[0]["payload"]
+    assert event_payload["calendar_policy_event_summary"] is None
+    assert summary not in json.dumps(event_payload)
+    with sqlite3.connect(path) as conn:
+        sample_payload = conn.execute("SELECT payload_json FROM samples").fetchone()[0]
+        migration = conn.execute(
+            "SELECT value FROM store_metadata WHERE key = ?",
+            ("calendar_privacy_redaction_v1",),
+        ).fetchone()
+    assert summary not in sample_payload
+    assert migration is not None
+
+
+def test_calendar_summary_is_redacted_before_new_event_is_stored(
+    tmp_path: Path,
+) -> None:
+    store = EventStore(tmp_path / "events.sqlite3")
+    summary = "a"
+
+    store.record_run(
+        [
+            {
+                "zone_id": "1",
+                "mode": "calendar_checkin_trigger",
+                "suggested_action": "would_set_calendar_checkin_target",
+                "reason": f"calendar checkin would set heat for {summary}",
+                "calendar_policy_event_summary": summary,
+                "calendar_policy_reason": f"calendar checkin would set heat for {summary}",
+                "climate_available": True,
+                "sensor_stale": False,
+            }
+        ],
+        run_at=datetime(2026, 6, 3, 13, 1, tzinfo=UTC),
+    )
+
+    payload = store.recent_events()[0]["payload"]
+    assert payload["calendar_policy_event_summary"] is None
+    assert payload["reason"].endswith("for a calendar event")
+    assert payload["suggested_action"] == "would_set_calendar_checkin_target"

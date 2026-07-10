@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import logging
 from typing import Any
@@ -79,7 +80,7 @@ class DashboardServer:
         await writer.drain()
 
     def _html(self) -> str:
-        return HTML.replace("__TITLE__", self.title)
+        return HTML.replace("__TITLE__", html.escape(self.title))
 
 
 HTML = """<!doctype html>
@@ -126,6 +127,13 @@ h1 { margin:0; font-size:25px; letter-spacing:0; font-weight:760; }
 <section class="events" id="events"></section>
 </main>
 <script>
+const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, character => ({
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+  '"': '&quot;',
+  "'": '&#39;'
+})[character]);
 const fmt = (v, suffix='') => v === null || v === undefined ? 'unknown' : `${Number.isFinite(v) ? Math.round(v * 1000) / 1000 : v}${suffix}`;
 const bool = (v) => v ? 'yes' : 'no';
 const tone = (z) => {
@@ -133,15 +141,16 @@ const tone = (z) => {
   if (z.mode === 'drying_elevated' || z.mode === 'drying_watch' || z.mode === 'heating_observed') return 'warn';
   return 'good';
 };
-const metric = (k, v, c='') => `<div class="metric"><span class="key">${k}</span><span class="value ${c}">${v}</span></div>`;
+const metric = (k, v, c='') => `<div class="metric"><span class="key">${escapeHtml(k)}</span><span class="value ${c}">${escapeHtml(v)}</span></div>`;
 async function load() {
   const res = await fetch('api/status', {cache:'no-store'});
   const data = await res.json();
   const alerts = data.zones.filter(z => tone(z) === 'bad').length;
   const suggestions = data.zones.filter(z => z.suggested_action && z.suggested_action !== 'none').length;
+  const calendarState = !data.calendar_policy_enabled ? 'off' : data.active_calendar_policy ? 'active' : 'observed';
   document.getElementById('subtitle').textContent = `${data.house_code} · ${data.active_control ? 'ACTIVE CONTROL' : 'observer only'} · updated ${data.last_run_at || 'never'}`;
-  document.getElementById('status').innerHTML = `<span class="pill">${data.zones.length} zones</span><span class="pill ${data.boiler_on ? 'warn' : 'good'}">boiler ${data.boiler_on ? 'on' : 'off'}</span><span class="pill ${data.boiler_policy_action === 'none' ? 'good' : 'warn'}">${data.boiler_policy_action || 'boiler policy unknown'}</span><span class="pill ${data.calendar_policy_enabled ? 'cool' : 'warn'}">calendar ${data.calendar_policy_enabled ? 'observed' : 'off'}</span><span class="pill warn">${suggestions} suggestions</span><span class="pill ${alerts ? 'bad' : 'good'}">${alerts} alerts</span>`;
-  document.getElementById('zones').innerHTML = data.zones.map(z => `<article class="card"><h2><span>${data.house_code} ${z.zone_id.toUpperCase()}</span><span class="badge ${tone(z)}">${z.mode}</span></h2>${[
+  document.getElementById('status').innerHTML = `<span class="pill">${escapeHtml(data.zones.length)} zones</span><span class="pill ${data.boiler_on ? 'warn' : 'good'}">boiler ${data.boiler_on ? 'on' : 'off'}</span><span class="pill ${data.boiler_policy_action === 'none' ? 'good' : 'warn'}">${escapeHtml(data.boiler_policy_action || 'boiler policy unknown')}</span><span class="pill ${calendarState === 'observed' ? 'cool' : 'warn'}">calendar ${escapeHtml(calendarState)}</span><span class="pill warn">${escapeHtml(suggestions)} suggestions</span><span class="pill ${alerts ? 'bad' : 'good'}">${escapeHtml(alerts)} alerts</span>`;
+  document.getElementById('zones').innerHTML = data.zones.map(z => `<article class="card"><h2><span>${escapeHtml(data.house_code)} ${escapeHtml(String(z.zone_id ?? '').toUpperCase())}</span><span class="badge ${tone(z)}">${escapeHtml(z.mode)}</span></h2>${[
     metric('action', z.suggested_action || 'none', z.suggested_action === 'none' ? 'good' : 'warn'),
     metric('observed target', fmt(z.target_temperature_c, '°C')),
     metric('suggested target', fmt(z.suggested_target_temperature_c, '°C'), z.suggested_action === 'would_raise_drying_target' ? 'warn' : ''),
@@ -158,11 +167,11 @@ async function load() {
     metric('humidity rate', fmt(z.absolute_humidity_rate_gm3_per_min, ' g/m3/min')),
     metric('climate entity', bool(z.climate_available), z.climate_available ? 'good' : 'bad'),
     metric('stale sensor', bool(z.sensor_stale), z.sensor_stale ? 'bad' : 'good')
-  ].join('')}<div class="reason">${z.reason}</div></article>`).join('');
+  ].join('')}<div class="reason">${escapeHtml(z.reason)}</div></article>`).join('');
   const summaries = (data.daily_summaries || []).slice(0, 30);
-  document.getElementById('summaries').innerHTML = summaries.length ? summaries.map(s => { const m = s.metrics || {}; const tone = m.would_be_worse_than_current_system ? 'bad' : m.would_improve_current_system ? 'warn' : (m.hard_safety_blockers || 0) ? 'bad' : 'good'; return `<div class="event"><span>${s.day}</span><span>${s.zone_id.toUpperCase()}</span><span class="${tone}">daily</span><span class="reason">better ${m.would_improve_current_system || 0} · worse ${m.would_be_worse_than_current_system || 0} · HA policy matches ${m.would_match_current_ha_policy || 0} · blockers ${m.hard_safety_blockers || 0} · drying severe ${m.drying_severe_observations || 0} · avg response ${fmt(m.heating_response_avg_c, '°C')}</span></div>`; }).join('') : '<div class="empty">No daily observer summary recorded yet.</div>';
+  document.getElementById('summaries').innerHTML = summaries.length ? summaries.map(s => { const m = s.metrics || {}; const tone = m.would_be_worse_than_current_system ? 'bad' : m.would_improve_current_system ? 'warn' : (m.hard_safety_blockers || 0) ? 'bad' : 'good'; return `<div class="event"><span>${escapeHtml(s.day)}</span><span>${escapeHtml(String(s.zone_id ?? '').toUpperCase())}</span><span class="${tone}">daily</span><span class="reason">better ${escapeHtml(m.would_improve_current_system || 0)} · worse ${escapeHtml(m.would_be_worse_than_current_system || 0)} · HA policy matches ${escapeHtml(m.would_match_current_ha_policy || 0)} · blockers ${escapeHtml(m.hard_safety_blockers || 0)} · drying severe ${escapeHtml(m.drying_severe_observations || 0)} · avg response ${escapeHtml(fmt(m.heating_response_avg_c, '°C'))}</span></div>`; }).join('') : '<div class="empty">No daily observer summary recorded yet.</div>';
   const events = (data.recent_events || []).slice(0, 30);
-  document.getElementById('events').innerHTML = events.length ? events.map(e => `<div class="event"><span>${e.ts}</span><span>${e.zone_id.toUpperCase()}</span><span class="cool">${e.kind}</span><span class="reason">${e.payload.reason || e.payload.suggested_action || ''}</span></div>`).join('') : '<div class="empty">No observer events recorded yet.</div>';
+  document.getElementById('events').innerHTML = events.length ? events.map(e => `<div class="event"><span>${escapeHtml(e.ts)}</span><span>${escapeHtml(String(e.zone_id ?? '').toUpperCase())}</span><span class="cool">${escapeHtml(e.kind)}</span><span class="reason">${escapeHtml(e.payload.reason || e.payload.suggested_action || '')}</span></div>`).join('') : '<div class="empty">No observer events recorded yet.</div>';
 }
 load(); setInterval(load, 30000);
 </script>

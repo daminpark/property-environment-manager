@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 from ventilation_manager.config import Settings, ZoneConfig
 from ventilation_manager.controller import VentilationController, ZoneSnapshot
@@ -81,6 +83,69 @@ def snapshot(settings: Settings, now: datetime, **kwargs: object) -> ZoneSnapsho
         absolute_humidity=float(kwargs["abs_h"]),
         sample_ts=kwargs.get("sample_ts", now),  # type: ignore[arg-type]
     )
+
+
+def entity_state(value: object, updated_at: datetime) -> SimpleNamespace:
+    return SimpleNamespace(state=str(value), last_updated=updated_at.isoformat())
+
+
+def make_two_zone_settings(tmp_path: Path, *, active_control: bool) -> Settings:
+    settings = make_settings(tmp_path)
+    zones = tuple(
+        ZoneConfig(
+            zone_id=zone_id,
+            display_name=f"193 {zone_id.upper()}",
+            change_only_sensor=False,
+            fan_entity=f"switch.193_{zone_id}_fan",
+            humidity_entity=f"sensor.193_{zone_id}_humidity",
+            temperature_entity=f"sensor.193_{zone_id}_temperature",
+            absolute_humidity_entity=f"sensor.193_{zone_id}_absolute_humidity",
+        )
+        for zone_id in ("a", "b")
+    )
+    return replace(settings, zones=zones, active_control=active_control)
+
+
+def complete_states(settings: Settings, now: datetime) -> dict[str, SimpleNamespace]:
+    states: dict[str, SimpleNamespace] = {}
+    for zone in settings.zones:
+        states[zone.fan_entity] = entity_state("off", now)
+        states[zone.humidity_entity] = entity_state(82, now)
+        states[zone.temperature_entity] = entity_state(22, now)
+        states[zone.absolute_humidity_entity] = entity_state(18, now)
+    return states
+
+
+class FakeHomeAssistant:
+    def __init__(
+        self,
+        states: dict[str, SimpleNamespace],
+        *,
+        diagnostic_failure_prefix: str | None = None,
+        turn_on_failure: str | None = None,
+    ) -> None:
+        self.states = states
+        self.diagnostic_failure_prefix = diagnostic_failure_prefix
+        self.turn_on_failure = turn_on_failure
+        self.set_state_calls: list[str] = []
+        self.switch_calls: list[tuple[str, bool]] = []
+
+    async def get_states(self) -> dict[str, SimpleNamespace]:
+        return self.states
+
+    async def set_state(
+        self, entity_id: str, state: object, attributes: dict[str, object]
+    ) -> None:
+        self.set_state_calls.append(entity_id)
+        if self.diagnostic_failure_prefix and entity_id.startswith(
+            self.diagnostic_failure_prefix
+        ):
+            raise RuntimeError("diagnostic write failed")
+
+    async def set_switch_state_verified(self, entity_id: str, *, on: bool) -> None:
+        self.switch_calls.append((entity_id, on))
+        if on and entity_id == self.turn_on_failure:
+            raise RuntimeError("fan write failed")
 
 
 def test_turns_on_when_absolute_humidity_rises_above_baseline(tmp_path: Path) -> None:
@@ -398,3 +463,226 @@ def test_observer_run_publishes_diagnostics_without_device_writes(tmp_path: Path
         in {item[0] for item in fake.published}
     )
     assert all(item[2]["active_control"] is False for item in fake.published)
+
+
+def test_snapshot_uses_oldest_direct_humidity_timestamp(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    zone = settings.zones[0]
+    now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+    states = {
+        zone.fan_entity: entity_state("off", now),
+        zone.humidity_entity: entity_state(55, now - timedelta(minutes=5)),
+        zone.temperature_entity: entity_state(22, now - timedelta(hours=2)),
+        zone.absolute_humidity_entity: entity_state(11.0, now - timedelta(minutes=10)),
+    }
+
+    result = controller._snapshot(zone, states, now)
+
+    assert result.absolute_humidity == 11.0
+    assert result.sample_ts == now - timedelta(minutes=10)
+
+
+def test_snapshot_uses_rh_and_temperature_timestamps_for_derived_humidity(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    zone = settings.zones[0]
+    now = datetime(2026, 6, 4, 12, 0, tzinfo=UTC)
+    states = {
+        zone.fan_entity: entity_state("off", now),
+        zone.humidity_entity: entity_state(55, now - timedelta(minutes=5)),
+        zone.temperature_entity: entity_state(22, now - timedelta(minutes=90)),
+        zone.absolute_humidity_entity: entity_state("unavailable", now),
+    }
+
+    result = controller._snapshot(zone, states, now)
+
+    assert result.absolute_humidity is not None
+    assert result.sample_ts == now - timedelta(minutes=90)
+
+
+def test_active_event_survives_stale_sensor_mode_and_turns_off(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime(2026, 6, 4, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=52, abs_h=10.0))
+    controller.evaluate(
+        snapshot(settings, now + timedelta(minutes=3), rh=78, abs_h=12.0)
+    )
+    stale = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=40),
+            fan_on=True,
+            rh=78,
+            abs_h=12.0,
+            sample_ts=now + timedelta(minutes=3),
+        )
+    )
+    recovered = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=41),
+            fan_on=True,
+            rh=64,
+            abs_h=10.6,
+        )
+    )
+
+    assert stale.mode == "sensor_stale"
+    assert recovered.should_run is False
+    assert recovered.command == "turn_off"
+
+
+def test_active_event_survives_unavailable_sensor_mode_and_turns_off(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    zone = settings.zones[0]
+    now = datetime(2026, 6, 4, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=52, abs_h=10.0))
+    controller.evaluate(
+        snapshot(settings, now + timedelta(minutes=3), rh=78, abs_h=12.0)
+    )
+    unavailable = controller.evaluate(
+        ZoneSnapshot(
+            zone=zone,
+            now=now + timedelta(minutes=10),
+            fan_on=True,
+            fan_available=True,
+            relative_humidity=None,
+            temperature_c=None,
+            absolute_humidity=None,
+            sample_ts=None,
+        )
+    )
+    recovered = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=40),
+            fan_on=True,
+            rh=64,
+            abs_h=10.6,
+        )
+    )
+
+    assert unavailable.mode == "sensor_unavailable"
+    assert recovered.should_run is False
+    assert recovered.command == "turn_off"
+
+
+def test_no_baseline_recovery_waits_for_minimum_runtime_before_turning_off(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime(2026, 6, 4, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=82, abs_h=18.0, fan_on=False))
+    before_minimum = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=10),
+            rh=60,
+            abs_h=11.0,
+            fan_on=True,
+        )
+    )
+    after_minimum = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=21),
+            rh=60,
+            abs_h=11.0,
+            fan_on=True,
+        )
+    )
+
+    assert before_minimum.should_run is True
+    assert before_minimum.command == "keep_on"
+    assert after_minimum.should_run is False
+    assert after_minimum.command == "turn_off"
+    assert controller.runtimes["b"].humidity_event_started_at is None
+
+
+def test_no_baseline_recovery_observer_runtime_does_not_depend_on_fan_state(
+    tmp_path: Path,
+) -> None:
+    settings = make_settings(tmp_path)
+    controller = VentilationController(settings)
+    now = datetime(2026, 6, 4, 10, 0, tzinfo=UTC)
+
+    controller.evaluate(snapshot(settings, now, rh=82, abs_h=18.0, fan_on=False))
+    before_minimum = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=2),
+            rh=60,
+            abs_h=11.0,
+            fan_on=False,
+        )
+    )
+    after_minimum = controller.evaluate(
+        snapshot(
+            settings,
+            now + timedelta(minutes=21),
+            rh=60,
+            abs_h=11.0,
+            fan_on=False,
+        )
+    )
+
+    assert before_minimum.should_run is True
+    assert before_minimum.command == "keep_on"
+    assert after_minimum.should_run is False
+    assert after_minimum.command == "turn_off"
+
+
+def test_run_once_continues_after_zone_evaluation_failure(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    settings = make_two_zone_settings(tmp_path, active_control=False)
+    controller = VentilationController(settings)
+    now = datetime.now(UTC)
+    ha = FakeHomeAssistant(complete_states(settings, now))
+    original_evaluate = controller.evaluate
+
+    def fail_first_zone(current: ZoneSnapshot):
+        if current.zone.zone_id == "a":
+            raise RuntimeError("evaluation failed")
+        return original_evaluate(current)
+
+    monkeypatch.setattr(controller, "evaluate", fail_first_zone)  # type: ignore[attr-defined]
+
+    decisions = asyncio.run(controller.run_once(ha))
+
+    assert [decision.zone_id for decision in decisions] == ["b"]
+    assert any(entity_id.startswith("sensor.193_b_ventilation") for entity_id in ha.set_state_calls)
+
+
+def test_run_once_keeps_actuation_and_later_zones_after_write_failures(
+    tmp_path: Path,
+) -> None:
+    settings = make_two_zone_settings(tmp_path, active_control=True)
+    controller = VentilationController(settings)
+    now = datetime.now(UTC)
+    first_zone, second_zone = settings.zones
+    ha = FakeHomeAssistant(
+        complete_states(settings, now),
+        diagnostic_failure_prefix="sensor.193_a_ventilation",
+        turn_on_failure=first_zone.fan_entity,
+    )
+
+    decisions = asyncio.run(controller.run_once(ha))
+
+    assert [decision.zone_id for decision in decisions] == ["a", "b"]
+    assert ha.switch_calls == [
+        (first_zone.fan_entity, True),
+        (second_zone.fan_entity, True),
+    ]
+    assert any(entity_id.startswith("sensor.193_b_ventilation") for entity_id in ha.set_state_calls)

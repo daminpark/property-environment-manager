@@ -1,6 +1,6 @@
 [project]
 name = "property-environment-manager"
-version = "0.1.0"
+version = "0.2.1"
 description = "Observer-first Home Assistant add-on for humidity ventilation and TRV heating policy"
 requires-python = ">=3.12"
 dependencies = [

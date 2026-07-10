@@ -1,6 +1,6 @@
 name: "Property Environment Manager"
 description: "Observer-first Home Assistant add-on for humidity ventilation and TRV heating policy"
-version: "0.2.0"
+version: "0.2.1"
 init: false
 slug: "property_environment_manager"
 url: "https://github.com/daminpark/property-environment-manager"

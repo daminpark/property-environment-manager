@@ -106,14 +106,14 @@ class ZoneRuntime:
     zone_id: str
     samples: list[Sample] = field(default_factory=list)
     last_mode: str = "starting"
-    last_reason: str = "starting"
+    completed_calendar_transition_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
             "zone_id": self.zone_id,
             "samples": [sample.to_json() for sample in self.samples],
             "last_mode": self.last_mode,
-            "last_reason": self.last_reason,
+            "completed_calendar_transition_id": self.completed_calendar_transition_id,
         }
 
     @classmethod
@@ -121,7 +121,9 @@ class ZoneRuntime:
         runtime = cls(zone_id=str(data["zone_id"]))
         runtime.samples = [Sample.from_json(item) for item in data.get("samples", [])]
         runtime.last_mode = str(data.get("last_mode", "restored"))
-        runtime.last_reason = str(data.get("last_reason", "restored"))
+        runtime.completed_calendar_transition_id = data.get(
+            "completed_calendar_transition_id"
+        )
         return runtime
 
 
@@ -184,6 +186,7 @@ class ZoneDecision:
     calendar_policy_active_booking: bool | None
     calendar_policy_entity_id: str | None
     calendar_policy_event_summary: str | None
+    calendar_policy_transition_id: str | None
     calendar_policy_suppressed_by_renovation: bool | None
 
 
@@ -227,8 +230,12 @@ class TRVRegulator:
             return
         try:
             data = json.loads(path.read_text())
+            legacy_reason_found = False
             for zone_id, runtime_data in data.get("zones", {}).items():
+                legacy_reason_found = legacy_reason_found or "last_reason" in runtime_data
                 self.runtimes[zone_id] = ZoneRuntime.from_json(runtime_data)
+            if legacy_reason_found:
+                self.save_state()
         except Exception:
             LOGGER.exception("Failed to load state from %s", path)
 
@@ -257,17 +264,29 @@ class TRVRegulator:
         calendar_policy = await self._calendar_policy_evaluator(ha, states, now)
         decisions: list[ZoneDecision] = []
         for zone in self.settings.zones:
-            snapshot = self._snapshot(
-                zone, states, now, boiler_on, boiler_available
-            )
-            policy = (
-                calendar_policy.policy_for_zone(zone.zone_id)
-                if calendar_policy is not None
-                else None
-            )
-            decision = self.evaluate(snapshot, policy)
-            decisions.append(decision)
-            await self._publish_diagnostics(ha, snapshot, decision)
+            try:
+                snapshot = self._snapshot(
+                    zone, states, now, boiler_on, boiler_available
+                )
+                policy = (
+                    calendar_policy.policy_for_zone(zone.zone_id)
+                    if calendar_policy is not None
+                    else None
+                )
+                decision = self.evaluate(snapshot, policy)
+                decisions.append(decision)
+            except Exception as exc:
+                self.control_errors[zone.zone_id] = (
+                    f"evaluation {type(exc).__name__}: {exc}"
+                )
+                LOGGER.exception("Failed to evaluate TRV zone %s", zone.zone_id)
+                continue
+            try:
+                await self._publish_diagnostics(ha, snapshot, decision)
+            except Exception:
+                LOGGER.exception(
+                    "Failed to publish diagnostics for TRV zone %s", zone.zone_id
+                )
             try:
                 await self._apply_decision(ha, snapshot, decision)
                 self.control_errors.pop(zone.zone_id, None)
@@ -279,14 +298,20 @@ class TRVRegulator:
             boiler_on=boiler_on,
             boiler_available=boiler_available,
         )
-        await self._publish_boiler_diagnostics(ha, boiler_decision)
+        try:
+            await self._publish_boiler_diagnostics(ha, boiler_decision)
+        except Exception:
+            LOGGER.exception("Failed to publish boiler diagnostics")
         try:
             await self._apply_boiler_decision(ha, boiler_decision)
             self.control_errors.pop("boiler", None)
         except Exception as exc:
             self.control_errors["boiler"] = f"{type(exc).__name__}: {exc}"
             LOGGER.exception("Boiler command failed")
-        await self._publish_health(ha, decisions, boiler_decision)
+        try:
+            await self._publish_health(ha, decisions, boiler_decision)
+        except Exception:
+            LOGGER.exception("Failed to publish TRV health")
         self.last_decisions = decisions
         self.last_boiler_decision = boiler_decision
         self.last_run_at = now
@@ -392,13 +417,6 @@ class TRVRegulator:
                 calendar_policy=calendar_policy,
             )
 
-        if snapshot.zone.is_drying_zone:
-            drying_decision = self._drying_decision(
-                snapshot, runtime, room_rate, heating_response, humidity_rate, sensor_stale
-            )
-            if drying_decision is not None:
-                return drying_decision
-
         window_open = self._window_open_risk(snapshot, room_rate, heating_response)
         ineffective = self._heating_ineffective(snapshot, heating_response)
         if window_open:
@@ -435,6 +453,18 @@ class TRVRegulator:
                 heating_ineffective=True,
                 calendar_policy=calendar_policy,
             )
+
+        if snapshot.zone.is_drying_zone:
+            drying_decision = self._drying_decision(
+                snapshot,
+                runtime,
+                room_rate,
+                heating_response,
+                humidity_rate,
+                sensor_stale,
+            )
+            if drying_decision is not None:
+                return drying_decision
 
         policy_decision = self._calendar_or_limit_decision(
             snapshot, runtime, room_rate, heating_response, humidity_rate, sensor_stale, calendar_policy
@@ -775,19 +805,30 @@ class TRVRegulator:
         if calendar_policy is None:
             return None
         if calendar_policy.trigger_action != "none":
-            return self._decision(
-                snapshot,
-                runtime,
-                calendar_policy.calendar_state,
-                calendar_policy.trigger_action,
-                calendar_policy.trigger_target_temperature_c,
-                calendar_policy.reason,
-                room_rate,
-                heating_response,
-                humidity_rate,
-                sensor_stale,
-                calendar_policy=calendar_policy,
+            transition_id = calendar_policy.transition_id
+            transition_complete = (
+                transition_id is not None
+                and runtime.completed_calendar_transition_id == transition_id
             )
+            if not transition_complete and self._calendar_transition_satisfied(
+                snapshot, calendar_policy
+            ):
+                runtime.completed_calendar_transition_id = transition_id
+                transition_complete = True
+            if not transition_complete:
+                return self._decision(
+                    snapshot,
+                    runtime,
+                    calendar_policy.calendar_state,
+                    calendar_policy.trigger_action,
+                    calendar_policy.trigger_target_temperature_c,
+                    calendar_policy.reason,
+                    room_rate,
+                    heating_response,
+                    humidity_rate,
+                    sensor_stale,
+                    calendar_policy=calendar_policy,
+                )
         if calendar_policy.suppressed_by_renovation:
             return None
         if snapshot.zone.is_guest_zone:
@@ -803,6 +844,15 @@ class TRVRegulator:
             if service_revert is not None:
                 return service_revert
         return None
+
+    def _calendar_transition_satisfied(
+        self, snapshot: ZoneSnapshot, calendar_policy: ZoneCalendarPolicy
+    ) -> bool:
+        current = snapshot.target_temperature_c
+        desired = calendar_policy.trigger_target_temperature_c
+        if current is None or desired is None:
+            return False
+        return abs(current - desired) <= 0.05
 
     def _guest_limit_decision(
         self,
@@ -931,12 +981,21 @@ class TRVRegulator:
         calendar_policy: ZoneCalendarPolicy | None = None,
     ) -> ZoneDecision:
         runtime.last_mode = mode
-        runtime.last_reason = reason
         room_age = self._sample_age_minutes(snapshot.now, snapshot.room_sample_ts)
         humidity_age = self._sample_age_minutes(snapshot.now, snapshot.humidity_sample_ts)
         child_lock_age = self._sample_age_seconds(
             snapshot.now, snapshot.child_lock_sample_ts
         )
+        calendar_policy_action = (
+            calendar_policy.trigger_action if calendar_policy is not None else None
+        )
+        if (
+            calendar_policy is not None
+            and calendar_policy.transition_id is not None
+            and runtime.completed_calendar_transition_id
+            == calendar_policy.transition_id
+        ):
+            calendar_policy_action = "none"
         return ZoneDecision(
             zone_id=snapshot.zone.zone_id,
             mode=mode,
@@ -972,9 +1031,7 @@ class TRVRegulator:
                 if calendar_policy is not None
                 else None
             ),
-            calendar_policy_action=(
-                calendar_policy.trigger_action if calendar_policy is not None else None
-            ),
+            calendar_policy_action=calendar_policy_action,
             calendar_policy_reason=(
                 calendar_policy.reason if calendar_policy is not None else None
             ),
@@ -986,6 +1043,9 @@ class TRVRegulator:
             ),
             calendar_policy_event_summary=(
                 calendar_policy.event_summary if calendar_policy is not None else None
+            ),
+            calendar_policy_transition_id=(
+                calendar_policy.transition_id if calendar_policy is not None else None
             ),
             calendar_policy_suppressed_by_renovation=(
                 calendar_policy.suppressed_by_renovation
@@ -1025,6 +1085,7 @@ class TRVRegulator:
             "calendar_policy_active_booking": decision.calendar_policy_active_booking,
             "calendar_policy_entity_id": decision.calendar_policy_entity_id,
             "calendar_policy_event_summary": decision.calendar_policy_event_summary,
+            "calendar_policy_transition_id": decision.calendar_policy_transition_id,
             "calendar_policy_suppressed_by_renovation": (
                 decision.calendar_policy_suppressed_by_renovation
             ),
@@ -1137,16 +1198,29 @@ class TRVRegulator:
         boiler_on: bool,
         boiler_available: bool,
     ) -> BoilerDecision:
+        decisions_by_zone = {decision.zone_id: decision for decision in decisions}
+        configured_zone_ids = {zone.zone_id for zone in self.settings.zones}
         demanding = tuple(
-            decision.zone_id
-            for decision in decisions
-            if decision.climate_available and decision.hvac_action == "heating"
+            zone.zone_id
+            for zone in self.settings.zones
+            if (decision := decisions_by_zone.get(zone.zone_id)) is not None
+            and decision.climate_available
+            and decision.hvac_action == "heating"
         )
         unavailable = tuple(
+            zone.zone_id
+            for zone in self.settings.zones
+            if (decision := decisions_by_zone.get(zone.zone_id)) is None
+            or not decision.climate_available
+            or decision.hvac_action not in {"heating", "idle", "off"}
+        ) + tuple(
             decision.zone_id
             for decision in decisions
-            if not decision.climate_available
-            or decision.hvac_action not in {"heating", "idle", "off"}
+            if decision.zone_id not in configured_zone_ids
+            and (
+                not decision.climate_available
+                or decision.hvac_action not in {"heating", "idle", "off"}
+            )
         )
         should_be_on = bool(demanding)
         control_safe = boiler_available and (should_be_on or not unavailable)
@@ -1296,20 +1370,42 @@ class TRVRegulator:
                 "Refusing to control unavailable TRV %s", snapshot.zone.climate_entity
             )
             return
+        drying_actions = {
+            "would_raise_drying_target",
+            "would_hold_base_target",
+        }
+        if decision.suggested_action in drying_actions and decision.sensor_stale:
+            LOGGER.warning(
+                "Refusing stale drying-room write for %s: %s",
+                snapshot.zone.climate_entity,
+                decision.reason,
+            )
+            return
         if (
             decision.suggested_action == "would_raise_drying_target"
             and decision.suggested_target_temperature_c is not None
             and snapshot.target_temperature_c is not None
             and decision.suggested_target_temperature_c > snapshot.target_temperature_c
         ):
-            if decision.sensor_stale:
-                LOGGER.error(
-                    "Refusing drying target write with stale sensor for %s",
-                    snapshot.zone.climate_entity,
-                )
-                return
             LOGGER.info(
                 "Setting %s to %.1fC: %s",
+                snapshot.zone.climate_entity,
+                decision.suggested_target_temperature_c,
+                decision.reason,
+            )
+            await ha.set_climate_temperature_verified(
+                snapshot.zone.climate_entity, decision.suggested_target_temperature_c
+            )
+            return
+        if (
+            decision.suggested_action == "would_hold_base_target"
+            and decision.suggested_target_temperature_c is not None
+            and snapshot.target_temperature_c is not None
+            and snapshot.target_temperature_c
+            > decision.suggested_target_temperature_c + 0.05
+        ):
+            LOGGER.info(
+                "Restoring %s to base drying target %.1fC: %s",
                 snapshot.zone.climate_entity,
                 decision.suggested_target_temperature_c,
                 decision.reason,
@@ -1338,6 +1434,21 @@ class TRVRegulator:
             await ha.set_climate_temperature_verified(
                 snapshot.zone.climate_entity, decision.suggested_target_temperature_c
             )
+            if (
+                decision.suggested_action
+                in {
+                    "would_set_calendar_checkin_target",
+                    "would_set_calendar_checkout_target",
+                }
+                and decision.calendar_policy_transition_id is not None
+            ):
+                runtime = self.runtimes.setdefault(
+                    snapshot.zone.zone_id,
+                    ZoneRuntime(zone_id=snapshot.zone.zone_id),
+                )
+                runtime.completed_calendar_transition_id = (
+                    decision.calendar_policy_transition_id
+                )
             return
         if decision.suggested_action == "would_set_hvac_mode_heat":
             LOGGER.info("Restoring %s HVAC mode to heat", snapshot.zone.climate_entity)
@@ -1387,6 +1498,7 @@ class TRVRegulator:
                 "calendar_policy_active_booking": decision.calendar_policy_active_booking,
                 "calendar_policy_entity_id": decision.calendar_policy_entity_id,
                 "calendar_policy_event_summary": decision.calendar_policy_event_summary,
+                "calendar_policy_transition_id": decision.calendar_policy_transition_id,
                 "calendar_policy_suppressed_by_renovation": (
                     decision.calendar_policy_suppressed_by_renovation
                 ),
