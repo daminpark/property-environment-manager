@@ -15,6 +15,8 @@ The package separates alert urgency by device role:
 
 Every immediate category has a recovery notification. The daily summary is
 bounded so a Zigbee bridge outage cannot create an unbounded notification.
+Delayed startup audits cover devices that were already unavailable before Home
+Assistant attached the state-change automations, without duplicating alerts.
 Zigbee2MQTT availability must be enabled; passive-device timeout policy remains
 owned by Zigbee2MQTT so sparse battery sensors are not inferred stale from an
 unchanged temperature value.

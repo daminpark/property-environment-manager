@@ -250,7 +250,19 @@ automation:
         entity_id: binary_sensor.__HOUSE___critical_device_problem
         to: "on"
         for: "00:10:00"
+        id: state_change
+      - trigger: homeassistant
+        event: start
+        id: startup
     actions:
+      - if:
+          - condition: template
+            value_template: "{{ trigger.id == 'startup' }}"
+        then:
+          - delay: "00:10:00"
+          - condition: state
+            entity_id: binary_sensor.__HOUSE___critical_device_problem
+            state: "on"
       - action: notify.notify
         data:
           title: "__HOUSE__ critical device unavailable"
@@ -275,7 +287,19 @@ automation:
         entity_id: binary_sensor.__HOUSE___environment_sensor_problem
         to: "on"
         for: "00:15:00"
+        id: state_change
+      - trigger: homeassistant
+        event: start
+        id: startup
     actions:
+      - if:
+          - condition: template
+            value_template: "{{ trigger.id == 'startup' }}"
+        then:
+          - delay: "00:15:00"
+          - condition: state
+            entity_id: binary_sensor.__HOUSE___environment_sensor_problem
+            state: "on"
       - action: notify.notify
         data:
           title: "__HOUSE__ environment sensor unavailable"
@@ -300,7 +324,19 @@ automation:
         entity_id: binary_sensor.__HOUSE___environment_manager_problem
         to: "on"
         for: "00:05:00"
+        id: state_change
+      - trigger: homeassistant
+        event: start
+        id: startup
     actions:
+      - if:
+          - condition: template
+            value_template: "{{ trigger.id == 'startup' }}"
+        then:
+          - delay: "00:05:00"
+          - condition: state
+            entity_id: binary_sensor.__HOUSE___environment_manager_problem
+            state: "on"
       - action: notify.notify
         data:
           title: "__HOUSE__ environment manager not healthy"
