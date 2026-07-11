@@ -1,0 +1,313 @@
+# Home Assistant package v1 for owner-only operational device-health events.
+# Replace __HOUSE__ with 193 or 195 before installation.
+# Requires rest_command.vbr_device_health from docs/device-health.md.
+#
+# This package deliberately excludes low-battery monitoring. The installed
+# battery_monitor package already creates VBR system tasks for those devices.
+
+template:
+  - triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: "/5"
+      - trigger: state
+        entity_id:
+          - sensor.__HOUSE___a_thermometer_humidity
+          - sensor.__HOUSE___b_thermometer_humidity
+          - sensor.__HOUSE___c_thermometer_humidity
+          - sensor.__HOUSE___k_thermometer_humidity
+          - switch.__HOUSE___a_fan
+          - switch.__HOUSE___b_fan
+          - switch.__HOUSE___c_fan
+          - switch.__HOUSE___k_fan
+    binary_sensor:
+      - name: "__HOUSE__ Running Fan Humidity Stale V1"
+        unique_id: "device_health_events_v1___HOUSE___running_fan_humidity_stale"
+        device_class: problem
+        icon: mdi:water-percent-alert
+        state: >
+          {% set checks = [
+            ('sensor.__HOUSE___a_thermometer_humidity', 'switch.__HOUSE___a_fan'),
+            ('sensor.__HOUSE___b_thermometer_humidity', 'switch.__HOUSE___b_fan'),
+            ('sensor.__HOUSE___c_thermometer_humidity', 'switch.__HOUSE___c_fan'),
+            ('sensor.__HOUSE___k_thermometer_humidity', 'switch.__HOUSE___k_fan')
+          ] %}
+          {% set ns = namespace(items=[]) %}
+          {% for sensor_id, fan_id in checks %}
+            {% if is_state(fan_id, 'on') %}
+              {% set matches = states.sensor
+                  | selectattr('entity_id', 'eq', sensor_id) | list %}
+              {% if matches | count > 0 %}
+                {% set item = matches[0] %}
+                {% set reported = item.last_reported
+                    if item.last_reported is defined
+                       and item.last_reported is not none
+                    else item.last_updated %}
+                {% if as_timestamp(now())
+                      - as_timestamp(reported, 0) >= 3600 %}
+                  {% set ns.items = ns.items + [sensor_id] %}
+                {% endif %}
+              {% else %}
+                {% set fan_matches = states.switch
+                    | selectattr('entity_id', 'eq', fan_id) | list %}
+                {% if fan_matches | count > 0
+                      and as_timestamp(now())
+                        - as_timestamp(fan_matches[0].last_changed, 0) >= 3600 %}
+                  {% set ns.items = ns.items + [sensor_id] %}
+                {% endif %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.items | count > 0 }}
+        attributes:
+          problem_entities: >
+            {% set checks = [
+              ('sensor.__HOUSE___a_thermometer_humidity', 'switch.__HOUSE___a_fan'),
+              ('sensor.__HOUSE___b_thermometer_humidity', 'switch.__HOUSE___b_fan'),
+              ('sensor.__HOUSE___c_thermometer_humidity', 'switch.__HOUSE___c_fan'),
+              ('sensor.__HOUSE___k_thermometer_humidity', 'switch.__HOUSE___k_fan')
+            ] %}
+            {% set ns = namespace(items=[]) %}
+            {% for sensor_id, fan_id in checks %}
+              {% if is_state(fan_id, 'on') %}
+                {% set matches = states.sensor
+                    | selectattr('entity_id', 'eq', sensor_id) | list %}
+                {% if matches | count > 0 %}
+                  {% set item = matches[0] %}
+                  {% set reported = item.last_reported
+                      if item.last_reported is defined
+                         and item.last_reported is not none
+                      else item.last_updated %}
+                  {% if as_timestamp(now())
+                        - as_timestamp(reported, 0) >= 3600 %}
+                    {% set ns.items = ns.items + [sensor_id] %}
+                  {% endif %}
+                {% else %}
+                  {% set fan_matches = states.switch
+                      | selectattr('entity_id', 'eq', fan_id) | list %}
+                  {% if fan_matches | count > 0
+                        and as_timestamp(now())
+                          - as_timestamp(fan_matches[0].last_changed, 0) >= 3600 %}
+                    {% set ns.items = ns.items + [sensor_id] %}
+                  {% endif %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            {{ ns.items | sort }}
+
+automation:
+  - id: "device_health_events_v1___HOUSE___water_leak"
+    alias: "Device Health Events V1 __HOUSE__: Water Leak"
+    description: "Create a new urgent owner incident for every actual A/B leak episode"
+    triggers:
+      - trigger: state
+        entity_id:
+          - binary_sensor.__HOUSE___a_leak_water_leak
+          - binary_sensor.__HOUSE___b_leak_water_leak
+        to: "on"
+    actions:
+      - variables:
+          episode_started: >-
+            {{ as_timestamp(trigger.to_state.last_changed, 0) | int }}
+          leak_name: >-
+            {{ trigger.to_state.attributes.friendly_name
+               | default(trigger.entity_id, true) }}
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: >-
+            device-health:__HOUSE__:water-leak:{{ trigger.entity_id }}:{{ episode_started }}
+          house: "__HOUSE__"
+          state: "open"
+          severity: "urgent"
+          notify: true
+          title: "__HOUSE__ water leak detected"
+          body: "{{ leak_name }} reports water. Check immediately."
+          entity_ids:
+            - "{{ trigger.entity_id }}"
+    mode: queued
+    max: 10
+
+  - id: "device_health_events_v1___HOUSE___water_leak_startup"
+    alias: "Device Health Events V1 __HOUSE__: Water Leak Startup Audit"
+    description: "Catch an actual leak that was already active when HA started"
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - delay: "00:01:00"
+      - repeat:
+          for_each:
+            - binary_sensor.__HOUSE___a_leak_water_leak
+            - binary_sensor.__HOUSE___b_leak_water_leak
+          sequence:
+            - condition: template
+              value_template: "{{ is_state(repeat.item, 'on') }}"
+            - variables:
+                episode_started: >-
+                  {{ as_timestamp(states[repeat.item].last_changed, 0) | int }}
+                leak_name: >-
+                  {{ state_attr(repeat.item, 'friendly_name')
+                     or repeat.item }}
+            - action: rest_command.vbr_device_health
+              data:
+                incident_key: >-
+                  device-health:__HOUSE__:water-leak:{{ repeat.item }}:{{ episode_started }}
+                house: "__HOUSE__"
+                state: "open"
+                severity: "urgent"
+                notify: true
+                title: "__HOUSE__ water leak detected"
+                body: "{{ leak_name }} reports water. Check immediately."
+                entity_ids:
+                  - "{{ repeat.item }}"
+    mode: single
+
+  - id: "device_health_events_v1___HOUSE___zigbee_leave"
+    alias: "Device Health Events V1 __HOUSE__: Zigbee Device Left"
+    description: "Report a definitive device_leave and open pairing for 120 seconds"
+    triggers:
+      - trigger: mqtt
+        topic: zigbee2mqtt/bridge/event
+    conditions:
+      - condition: template
+        value_template: >
+          {% set payload = trigger.payload_json
+              if trigger.payload_json is defined else {} %}
+          {% set data = payload.get('data', {}) %}
+          {{ payload.get('type') == 'device_leave'
+             and data.get('ieee_address', '') | length > 0 }}
+    actions:
+      - variables:
+          episode_started: "{{ as_timestamp(now(), 0) | int }}"
+          device_key: >-
+            {{ trigger.payload_json.data.ieee_address | lower
+               | regex_replace('[^a-z0-9._:-]', '-') }}
+          device_name: >-
+            {{ trigger.payload_json.data.friendly_name
+               | default(trigger.payload_json.data.ieee_address, true) }}
+      - action: mqtt.publish
+        continue_on_error: true
+        data:
+          topic: zigbee2mqtt/bridge/request/permit_join
+          payload: '{"value": true, "time": 120}'
+          qos: 0
+          retain: false
+      - action: rest_command.vbr_device_health
+        continue_on_error: true
+        data:
+          incident_key: >-
+            device-health:__HOUSE__:zigbee-leave:{{ device_key }}:{{ episode_started }}
+          house: "__HOUSE__"
+          state: "open"
+          severity: "urgent"
+          notify: true
+          title: "__HOUSE__ Zigbee device left"
+          body: >-
+            {{ device_name }} left Zigbee. Pairing is open for 120 seconds.
+          entity_ids: []
+    mode: queued
+    max: 10
+
+  - id: "device_health_events_v1___HOUSE___fan_humidity_stale"
+    alias: "Device Health Events V1 __HOUSE__: Running Fan Humidity Stale"
+    description: "Maintain one quiet owner task for stale running-fan sensors"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.__HOUSE___running_fan_humidity_stale_v1
+    conditions:
+      - condition: template
+        value_template: >
+          {{ trigger.to_state is not none
+             and (trigger.to_state.state == 'on'
+                  or (trigger.from_state is not none
+                      and trigger.from_state.state == 'on')) }}
+    actions:
+      - variables:
+          stale_entities: >-
+            {{ trigger.to_state.attributes.get('problem_entities', []) }}
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: "device-health:__HOUSE__:fan-humidity-stale"
+          house: "__HOUSE__"
+          state: >-
+            {{ 'open' if trigger.to_state.state == 'on' else 'recovered' }}
+          severity: "advisory"
+          notify: false
+          title: >-
+            __HOUSE__ {{ 'fan humidity needs attention'
+              if trigger.to_state.state == 'on'
+              else 'fan humidity recovered' }}
+          body: >-
+            {{ (stale_entities | count ~
+                ' running-fan humidity sensor(s) stale for 60 minutes.')
+               if trigger.to_state.state == 'on'
+               else 'All running-fan humidity sensors are reporting.' }}
+          entity_ids: "{{ stale_entities }}"
+    mode: queued
+    max: 5
+
+  - id: "device_health_events_v1___HOUSE___fan_long_run_open"
+    alias: "Device Health Events V1 __HOUSE__: Fan Long Run"
+    description: "Open one quiet owner task per A/B/C/K fan after 120 minutes"
+    triggers:
+      - trigger: state
+        entity_id:
+          - switch.__HOUSE___a_fan
+          - switch.__HOUSE___b_fan
+          - switch.__HOUSE___c_fan
+          - switch.__HOUSE___k_fan
+        to: "on"
+        for: "02:00:00"
+    actions:
+      - variables:
+          fan_zone: "{{ trigger.entity_id.split('_')[1] }}"
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: >-
+            device-health:__HOUSE__:fan-long-run:{{ fan_zone }}
+          house: "__HOUSE__"
+          state: "open"
+          severity: "advisory"
+          notify: false
+          title: "__HOUSE__.{{ fan_zone | upper }} fan running 2 hours"
+          body: "Fan has run continuously for 120 minutes. Check when convenient."
+          entity_ids:
+            - "{{ trigger.entity_id }}"
+    mode: queued
+    max: 4
+
+  - id: "device_health_events_v1___HOUSE___fan_long_run_recovered"
+    alias: "Device Health Events V1 __HOUSE__: Fan Long Run Recovered"
+    description: "Close only the A/B/C/K long-run task for the fan that stopped"
+    triggers:
+      - trigger: state
+        entity_id:
+          - switch.__HOUSE___a_fan
+          - switch.__HOUSE___b_fan
+          - switch.__HOUSE___c_fan
+          - switch.__HOUSE___k_fan
+        from: "on"
+        to: "off"
+    conditions:
+      - condition: template
+        value_template: >
+          {{ as_timestamp(now())
+             - as_timestamp(trigger.from_state.last_changed, 0) >= 7200 }}
+    actions:
+      - variables:
+          fan_zone: "{{ trigger.entity_id.split('_')[1] }}"
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: >-
+            device-health:__HOUSE__:fan-long-run:{{ fan_zone }}
+          house: "__HOUSE__"
+          state: "recovered"
+          severity: "advisory"
+          notify: false
+          title: "__HOUSE__.{{ fan_zone | upper }} fan stopped"
+          body: "Fan is off; its long-run task can be closed."
+          entity_ids:
+            - "{{ trigger.entity_id }}"
+    mode: queued
+    max: 4

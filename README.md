@@ -236,4 +236,6 @@ prefixes. Sanitized output should still be reviewed before publishing.
 The add-on publishes health entities but intentionally leaves notification
 routing to Home Assistant. A reusable, rate-limited package for manager
 heartbeats and property-device availability is documented in
-[`docs/device-health.md`](docs/device-health.md).
+[`docs/device-health.md`](docs/device-health.md). Actual leak, Zigbee leave,
+running-fan sensor freshness, and long-running fan incidents are documented in
+[`docs/device-health-events-v1.md`](docs/device-health-events-v1.md).

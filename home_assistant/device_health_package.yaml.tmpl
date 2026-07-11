@@ -1,152 +1,65 @@
-# Home Assistant package for property device availability notifications.
-# Replace __HOUSE__ with the house code before installing this file.
+# Home Assistant package for owner-only device-health incidents in Tachbrook Ops.
+# Replace __HOUSE__ with the local house code before installing this file.
+# `rest_command.vbr_device_health` must be defined in configuration.yaml; see
+# docs/device-health.md. Recipient selection belongs to the Tachbrook backend.
 
 template:
   - binary_sensor:
-      - name: "__HOUSE__ Critical Device Problem"
-        unique_id: "__HOUSE___critical_device_problem"
+      - name: "__HOUSE__ Boiler Relay Problem"
+        unique_id: "__HOUSE___boiler_relay_problem"
         device_class: problem
-        icon: mdi:alert-circle
+        icon: mdi:water-boiler-alert
         state: >
-          {% set bad = ['unavailable', 'unknown'] %}
-          {% set ns = namespace(items=[]) %}
-          {% for item in states.climate %}
-            {% if item.entity_id.startswith('climate.__HOUSE___')
-                  and item.entity_id.endswith('_trv')
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.switch %}
-            {% if item.entity_id.startswith('switch.__HOUSE___')
-                  and (item.entity_id.endswith('_fan')
-                       or item.entity_id.endswith('_boiler'))
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.lock %}
-            {% if item.entity_id.startswith('lock.__HOUSE___')
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.binary_sensor %}
-            {% if item.entity_id.startswith('binary_sensor.__HOUSE___')
-                  and item.entity_id.endswith('_leak_water_leak')
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.camera %}
-            {% if item.entity_id.startswith('camera.__HOUSE___')
-                  and item.entity_id.endswith('_front_doorbell_fluent')
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.sensor %}
-            {% if item.entity_id.startswith('sensor.__HOUSE___')
-                  and item.entity_id.endswith('_node_status')
-                  and (item.state | lower) == 'dead' %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {{ ns.items | count > 0 }}
-        attributes:
-          problem_entities: >
-            {% set bad = ['unavailable', 'unknown'] %}
-            {% set ns = namespace(items=[]) %}
-            {% for item in states.climate %}
-              {% if item.entity_id.startswith('climate.__HOUSE___')
-                    and item.entity_id.endswith('_trv')
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {% for item in states.switch %}
-              {% if item.entity_id.startswith('switch.__HOUSE___')
-                    and (item.entity_id.endswith('_fan')
-                         or item.entity_id.endswith('_boiler'))
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {% for item in states.lock %}
-              {% if item.entity_id.startswith('lock.__HOUSE___')
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {% for item in states.binary_sensor %}
-              {% if item.entity_id.startswith('binary_sensor.__HOUSE___')
-                    and item.entity_id.endswith('_leak_water_leak')
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {% for item in states.camera %}
-              {% if item.entity_id.startswith('camera.__HOUSE___')
-                    and item.entity_id.endswith('_front_doorbell_fluent')
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {% for item in states.sensor %}
-              {% if item.entity_id.startswith('sensor.__HOUSE___')
-                    and item.entity_id.endswith('_node_status')
-                    and (item.state | lower) == 'dead' %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {{ ns.items }}
+          {% set entity_id = 'switch.__HOUSE___y_boiler' %}
+          {% set matches = states.switch
+              | selectattr('entity_id', 'eq', entity_id) | list %}
+          {{ matches | count > 0
+             and matches[0].state in ['unavailable', 'unknown'] }}
 
-      - name: "__HOUSE__ Environment Sensor Problem"
-        unique_id: "__HOUSE___environment_sensor_problem"
+  - triggers:
+      - trigger: time_pattern
+        minutes: "/1"
+      - trigger: homeassistant
+        event: start
+    binary_sensor:
+      - name: "__HOUSE__ Ventilation Manager Problem"
+        unique_id: "__HOUSE___ventilation_manager_problem"
         device_class: problem
-        icon: mdi:thermometer-alert
+        icon: mdi:fan-alert
         state: >
-          {% set bad = ['unavailable', 'unknown'] %}
-          {% set ns = namespace(items=[]) %}
-          {% for item in states.sensor %}
-            {% if item.entity_id.startswith('sensor.__HOUSE___')
-                  and (item.entity_id.endswith('_thermometer_temperature')
-                       or item.entity_id.endswith('_button_fan_battery'))
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.binary_sensor %}
-            {% if item.entity_id.startswith('binary_sensor.__HOUSE___')
-                  and item.entity_id.endswith('_presence_presence')
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {{ ns.items | count > 0 }}
-        attributes:
-          problem_entities: >
-            {% set bad = ['unavailable', 'unknown'] %}
-            {% set ns = namespace(items=[]) %}
-            {% for item in states.sensor %}
-              {% if item.entity_id.startswith('sensor.__HOUSE___')
-                    and (item.entity_id.endswith('_thermometer_temperature')
-                         or item.entity_id.endswith('_button_fan_battery'))
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {% for item in states.binary_sensor %}
-              {% if item.entity_id.startswith('binary_sensor.__HOUSE___')
-                    and item.entity_id.endswith('_presence_presence')
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {{ ns.items }}
+          {% set entity_id = 'sensor.__HOUSE___ventilation_manager_health' %}
+          {% set matches = states.sensor
+              | selectattr('entity_id', 'eq', entity_id) | list %}
+          {% if matches | count == 0 %}
+            false
+          {% else %}
+            {% set item = matches[0] %}
+            {% set reported = item.last_reported
+                if item.last_reported is defined else item.last_updated %}
+            {{ item.state in ['control_error', 'unavailable', 'unknown']
+               or as_timestamp(now()) - as_timestamp(reported, 0) > 300 }}
+          {% endif %}
 
-      - name: "__HOUSE__ Lighting Device Problem"
-        unique_id: "__HOUSE___lighting_device_problem"
+      - name: "__HOUSE__ TRV Manager Problem"
+        unique_id: "__HOUSE___trv_manager_problem"
+        device_class: problem
+        icon: mdi:radiator-disabled
+        state: >
+          {% set entity_id = 'sensor.__HOUSE___trv_regulator_health' %}
+          {% set matches = states.sensor
+              | selectattr('entity_id', 'eq', entity_id) | list %}
+          {% if matches | count == 0 %}
+            false
+          {% else %}
+            {% set item = matches[0] %}
+            {% set reported = item.last_reported
+                if item.last_reported is defined else item.last_updated %}
+            {{ item.state in ['control_error', 'unavailable', 'unknown']
+               or as_timestamp(now()) - as_timestamp(reported, 0) > 300 }}
+          {% endif %}
+
+      - name: "__HOUSE__ Long Offline Lights"
+        unique_id: "__HOUSE___long_offline_lights"
         device_class: problem
         icon: mdi:lightbulb-alert
         state: >
@@ -156,13 +69,10 @@ template:
             {% if item.entity_id.startswith('light.__HOUSE___')
                   and not item.entity_id.endswith('_lights')
                   and not item.entity_id.endswith('_lamps')
-                  and item.state in bad %}
-              {% set ns.items = ns.items + [item.entity_id] %}
-            {% endif %}
-          {% endfor %}
-          {% for item in states.switch %}
-            {% if item.entity_id == 'switch.__HOUSE___stairway_lightswitch_relay'
-                  and item.state in bad %}
+                  and item.attributes.entity_id is not defined
+                  and item.state in bad
+                  and as_timestamp(now())
+                      - as_timestamp(item.last_changed, 0) >= 172800 %}
               {% set ns.items = ns.items + [item.entity_id] %}
             {% endif %}
           {% endfor %}
@@ -175,79 +85,22 @@ template:
               {% if item.entity_id.startswith('light.__HOUSE___')
                     and not item.entity_id.endswith('_lights')
                     and not item.entity_id.endswith('_lamps')
-                    and item.state in bad %}
+                    and item.attributes.entity_id is not defined
+                    and item.state in bad
+                    and as_timestamp(now())
+                        - as_timestamp(item.last_changed, 0) >= 172800 %}
                 {% set ns.items = ns.items + [item.entity_id] %}
               {% endif %}
             {% endfor %}
-            {% for item in states.switch %}
-              {% if item.entity_id == 'switch.__HOUSE___stairway_lightswitch_relay'
-                    and item.state in bad %}
-                {% set ns.items = ns.items + [item.entity_id] %}
-              {% endif %}
-            {% endfor %}
-            {{ ns.items }}
-
-  - triggers:
-      - trigger: time_pattern
-        minutes: "/1"
-      - trigger: homeassistant
-        event: start
-    binary_sensor:
-      - name: "__HOUSE__ Environment Manager Problem"
-        unique_id: "__HOUSE___environment_manager_problem"
-        device_class: problem
-        icon: mdi:home-alert
-        state: >
-          {% set bad = ['unavailable', 'unknown', 'control_error'] %}
-          {% set monitored = [
-            'sensor.__HOUSE___ventilation_manager_health',
-            'sensor.__HOUSE___trv_regulator_health'
-          ] %}
-          {% set ns = namespace(items=[]) %}
-          {% for entity_id in monitored %}
-            {% set value = states(entity_id) %}
-            {% if value in bad %}
-              {% set ns.items = ns.items + [entity_id] %}
-            {% else %}
-              {% set item = states[entity_id] %}
-              {% set reported = item.last_reported
-                  if item.last_reported is defined else item.last_updated %}
-              {% if as_timestamp(now()) - as_timestamp(reported, 0) > 300 %}
-                {% set ns.items = ns.items + [entity_id] %}
-              {% endif %}
-            {% endif %}
-          {% endfor %}
-          {{ ns.items | count > 0 }}
-        attributes:
-          problem_entities: >
-            {% set bad = ['unavailable', 'unknown', 'control_error'] %}
-            {% set monitored = [
-              'sensor.__HOUSE___ventilation_manager_health',
-              'sensor.__HOUSE___trv_regulator_health'
-            ] %}
-            {% set ns = namespace(items=[]) %}
-            {% for entity_id in monitored %}
-              {% set value = states(entity_id) %}
-              {% if value in bad %}
-                {% set ns.items = ns.items + [entity_id] %}
-              {% else %}
-                {% set item = states[entity_id] %}
-                {% set reported = item.last_reported
-                    if item.last_reported is defined else item.last_updated %}
-                {% if as_timestamp(now()) - as_timestamp(reported, 0) > 300 %}
-                  {% set ns.items = ns.items + [entity_id] %}
-                {% endif %}
-              {% endif %}
-            {% endfor %}
-            {{ ns.items }}
+            {{ ns.items | sort }}
 
 automation:
-  - id: "device_health___HOUSE___critical_alert"
-    alias: "Device Health __HOUSE__: Critical Alert"
-    description: "Aggregated alert for unavailable operational devices"
+  - id: "device_health___HOUSE___boiler_open"
+    alias: "Device Health __HOUSE__: Boiler Offline"
+    description: "Open the boiler incident after ten continuous minutes offline"
     triggers:
       - trigger: state
-        entity_id: binary_sensor.__HOUSE___critical_device_problem
+        entity_id: binary_sensor.__HOUSE___boiler_relay_problem
         to: "on"
         for: "00:10:00"
         id: state_change
@@ -260,68 +113,56 @@ automation:
             value_template: "{{ trigger.id == 'startup' }}"
         then:
           - delay: "00:10:00"
-          - condition: state
-            entity_id: binary_sensor.__HOUSE___critical_device_problem
-            state: "on"
-      - action: notify.notify
+      - condition: state
+        entity_id: binary_sensor.__HOUSE___boiler_relay_problem
+        state: "on"
+      - action: rest_command.vbr_device_health
         data:
-          title: "__HOUSE__ critical device unavailable"
-          message: |-
-            {% set items = state_attr(
-              'binary_sensor.__HOUSE___critical_device_problem',
-              'problem_entities') or [] %}
-            {% for entity_id in items[:20] %}
-            - {{ state_attr(entity_id, 'friendly_name') or entity_id }}
-              ({{ entity_id }})
-            {% endfor %}
-            {% if items | count > 20 %}
-            ...and {{ (items | count) - 20 }} more.
-            {% endif %}
+          incident_key: "device-health:__HOUSE__:boiler"
+          house: "__HOUSE__"
+          state: "open"
+          severity: "urgent"
+          notify: true
+          title: "__HOUSE__ boiler offline"
+          body: "Boiler relay has been unavailable for 10 minutes."
+          entity_ids:
+            - "switch.__HOUSE___y_boiler"
     mode: single
 
-  - id: "device_health___HOUSE___environment_alert"
-    alias: "Device Health __HOUSE__: Environment Sensor Alert"
-    description: "Aggregated alert for unavailable environmental sensors"
+  - id: "device_health___HOUSE___boiler_recovered"
+    alias: "Device Health __HOUSE__: Boiler Recovered"
+    description: "Resolve only a boiler outage that lasted long enough to alert"
     triggers:
       - trigger: state
-        entity_id: binary_sensor.__HOUSE___environment_sensor_problem
-        to: "on"
-        for: "00:15:00"
-        id: state_change
-      - trigger: homeassistant
-        event: start
-        id: startup
+        entity_id: binary_sensor.__HOUSE___boiler_relay_problem
+        from: "on"
+        to: "off"
+    conditions:
+      - condition: template
+        value_template: >
+          {{ as_timestamp(now())
+             - as_timestamp(trigger.from_state.last_changed, 0) >= 600 }}
     actions:
-      - if:
-          - condition: template
-            value_template: "{{ trigger.id == 'startup' }}"
-        then:
-          - delay: "00:15:00"
-          - condition: state
-            entity_id: binary_sensor.__HOUSE___environment_sensor_problem
-            state: "on"
-      - action: notify.notify
+      - action: rest_command.vbr_device_health
         data:
-          title: "__HOUSE__ environment sensor unavailable"
-          message: |-
-            {% set items = state_attr(
-              'binary_sensor.__HOUSE___environment_sensor_problem',
-              'problem_entities') or [] %}
-            {% for entity_id in items[:20] %}
-            - {{ state_attr(entity_id, 'friendly_name') or entity_id }}
-              ({{ entity_id }})
-            {% endfor %}
-            {% if items | count > 20 %}
-            ...and {{ (items | count) - 20 }} more.
-            {% endif %}
-    mode: single
+          incident_key: "device-health:__HOUSE__:boiler"
+          house: "__HOUSE__"
+          state: "recovered"
+          severity: "advisory"
+          notify: true
+          title: "__HOUSE__ boiler recovered"
+          body: "Boiler relay is responding again."
+          entity_ids:
+            - "switch.__HOUSE___y_boiler"
+    mode: queued
+    max: 2
 
-  - id: "device_health___HOUSE___manager_alert"
-    alias: "Device Health __HOUSE__: Manager Alert"
-    description: "Alerts when a manager errors or stops reporting"
+  - id: "device_health___HOUSE___ventilation_manager_open"
+    alias: "Device Health __HOUSE__: Ventilation Manager Unhealthy"
+    description: "Open a distinct incident for an enabled ventilation manager"
     triggers:
       - trigger: state
-        entity_id: binary_sensor.__HOUSE___environment_manager_problem
+        entity_id: binary_sensor.__HOUSE___ventilation_manager_problem
         to: "on"
         for: "00:05:00"
         id: state_change
@@ -334,91 +175,184 @@ automation:
             value_template: "{{ trigger.id == 'startup' }}"
         then:
           - delay: "00:05:00"
-          - condition: state
-            entity_id: binary_sensor.__HOUSE___environment_manager_problem
-            state: "on"
-      - action: notify.notify
+      - condition: state
+        entity_id: binary_sensor.__HOUSE___ventilation_manager_problem
+        state: "on"
+      - action: rest_command.vbr_device_health
         data:
-          title: "__HOUSE__ environment manager not healthy"
-          message: |-
-            {% set items = state_attr(
-              'binary_sensor.__HOUSE___environment_manager_problem',
-              'problem_entities') or [] %}
-            {% for entity_id in items %}
-            - {{ state_attr(entity_id, 'friendly_name') or entity_id }}
-              ({{ entity_id }}; state={{ states(entity_id) }})
-            {% endfor %}
+          incident_key: "device-health:__HOUSE__:ventilation-manager"
+          house: "__HOUSE__"
+          state: "open"
+          severity: "urgent"
+          notify: true
+          title: "__HOUSE__ ventilation manager unhealthy"
+          body: "The manager reported an error or stopped reporting."
+          entity_ids:
+            - "sensor.__HOUSE___ventilation_manager_health"
     mode: single
 
-  - id: "device_health___HOUSE___recovery"
-    alias: "Device Health __HOUSE__: Recovery"
-    description: "Confirms recovery only after an alert-worthy outage"
+  - id: "device_health___HOUSE___ventilation_manager_recovered"
+    alias: "Device Health __HOUSE__: Ventilation Manager Recovered"
+    description: "Resolve the ventilation-manager incident independently"
     triggers:
       - trigger: state
-        entity_id: binary_sensor.__HOUSE___critical_device_problem
+        entity_id: binary_sensor.__HOUSE___ventilation_manager_problem
         from: "on"
         to: "off"
-        id: critical
-      - trigger: state
-        entity_id: binary_sensor.__HOUSE___environment_sensor_problem
-        from: "on"
-        to: "off"
-        id: environment
-      - trigger: state
-        entity_id: binary_sensor.__HOUSE___environment_manager_problem
-        from: "on"
-        to: "off"
-        id: manager
     conditions:
       - condition: template
         value_template: >
-          {% set minimum = 300 if trigger.id == 'manager'
-              else 600 if trigger.id == 'critical' else 900 %}
           {{ as_timestamp(now())
-             - as_timestamp(trigger.from_state.last_changed) >= minimum }}
+             - as_timestamp(trigger.from_state.last_changed, 0) >= 300 }}
     actions:
-      - action: notify.notify
+      - action: rest_command.vbr_device_health
         data:
-          title: "__HOUSE__ device health recovered"
-          message: >
-            {{ trigger.id | replace('_', ' ') | title }} monitoring is healthy again.
+          incident_key: "device-health:__HOUSE__:ventilation-manager"
+          house: "__HOUSE__"
+          state: "recovered"
+          severity: "advisory"
+          notify: true
+          title: "__HOUSE__ ventilation manager recovered"
+          body: "The manager health and heartbeat are normal again."
+          entity_ids:
+            - "sensor.__HOUSE___ventilation_manager_health"
+    mode: queued
+    max: 2
+
+  - id: "device_health___HOUSE___trv_manager_open"
+    alias: "Device Health __HOUSE__: TRV Manager Unhealthy"
+    description: "Open a distinct incident for an enabled TRV manager"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.__HOUSE___trv_manager_problem
+        to: "on"
+        for: "00:05:00"
+        id: state_change
+      - trigger: homeassistant
+        event: start
+        id: startup
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ trigger.id == 'startup' }}"
+        then:
+          - delay: "00:05:00"
+      - condition: state
+        entity_id: binary_sensor.__HOUSE___trv_manager_problem
+        state: "on"
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: "device-health:__HOUSE__:trv-manager"
+          house: "__HOUSE__"
+          state: "open"
+          severity: "urgent"
+          notify: true
+          title: "__HOUSE__ heating manager unhealthy"
+          body: "The manager reported an error or stopped reporting."
+          entity_ids:
+            - "sensor.__HOUSE___trv_regulator_health"
+    mode: single
+
+  - id: "device_health___HOUSE___trv_manager_recovered"
+    alias: "Device Health __HOUSE__: TRV Manager Recovered"
+    description: "Resolve the TRV-manager incident independently"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.__HOUSE___trv_manager_problem
+        from: "on"
+        to: "off"
+    conditions:
+      - condition: template
+        value_template: >
+          {{ as_timestamp(now())
+             - as_timestamp(trigger.from_state.last_changed, 0) >= 300 }}
+    actions:
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: "device-health:__HOUSE__:trv-manager"
+          house: "__HOUSE__"
+          state: "recovered"
+          severity: "advisory"
+          notify: true
+          title: "__HOUSE__ heating manager recovered"
+          body: "The manager health and heartbeat are normal again."
+          entity_ids:
+            - "sensor.__HOUSE___trv_regulator_health"
+    mode: queued
+    max: 2
+
+  - id: "device_health___HOUSE___lighting_todo"
+    alias: "Device Health __HOUSE__: Long Offline Lights"
+    description: "Maintain one quiet owner task for lights offline at least 48 hours"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.__HOUSE___long_offline_lights
+    conditions:
+      - condition: template
+        value_template: >
+          {% set before = trigger.from_state.attributes.get(
+              'problem_entities', []) if trigger.from_state is not none else [] %}
+          {% set after = trigger.to_state.attributes.get(
+              'problem_entities', []) if trigger.to_state is not none else [] %}
+          {{ trigger.to_state is not none
+             and ((trigger.from_state is none and trigger.to_state.state == 'on')
+                  or (trigger.from_state is not none
+                      and (trigger.from_state.state != trigger.to_state.state
+                           or before != after))) }}
+    actions:
+      - action: rest_command.vbr_device_health
+        data:
+          incident_key: "device-health:__HOUSE__:lighting"
+          house: "__HOUSE__"
+          state: >-
+            {{ 'open' if trigger.to_state.state == 'on' else 'recovered' }}
+          severity: "advisory"
+          notify: false
+          title: >-
+            __HOUSE__ {{ 'lights need attention'
+              if trigger.to_state.state == 'on' else 'lights recovered' }}
+          body: >-
+            {% set items = trigger.to_state.attributes.get(
+                'problem_entities', []) %}
+            {{ (items | count ~ ' light(s) offline for at least 48 hours.')
+               if trigger.to_state.state == 'on'
+               else 'No individual lights remain offline for 48 hours.' }}
+          entity_ids: >-
+            {{ trigger.to_state.attributes.get('problem_entities', []) }}
     mode: queued
     max: 5
 
-  - id: "device_health___HOUSE___daily_summary"
-    alias: "Device Health __HOUSE__: Daily Summary"
-    description: "One quiet daily summary, including switched-off lighting"
+  - id: "device_health___HOUSE___lighting_startup_sync"
+    alias: "Device Health __HOUSE__: Long Offline Lights Startup Sync"
+    description: "Synchronize an existing quiet lighting incident after startup"
     triggers:
-      - trigger: time
-        at: "10:15:00"
-    conditions:
-      - condition: template
-        value_template: >
-          {{ is_state('binary_sensor.__HOUSE___critical_device_problem', 'on')
-             or is_state('binary_sensor.__HOUSE___environment_sensor_problem', 'on')
-             or is_state('binary_sensor.__HOUSE___environment_manager_problem', 'on')
-             or is_state('binary_sensor.__HOUSE___lighting_device_problem', 'on') }}
+      - trigger: homeassistant
+        event: start
     actions:
-      - action: notify.notify
+      - delay: "00:01:00"
+      - action: rest_command.vbr_device_health
         data:
-          title: "__HOUSE__ daily device health summary"
-          message: |-
-            {% set categories = [
-              ('Critical', 'binary_sensor.__HOUSE___critical_device_problem'),
-              ('Environment', 'binary_sensor.__HOUSE___environment_sensor_problem'),
-              ('Managers', 'binary_sensor.__HOUSE___environment_manager_problem'),
-              ('Lighting', 'binary_sensor.__HOUSE___lighting_device_problem')
-            ] %}
-            {% for label, entity_id in categories %}
-              {% set items = state_attr(entity_id, 'problem_entities') or [] %}
-              {% if items | count > 0 %}
-            {{ label }} ({{ items | count }}):
-                {% for item_id in items[:12] %}
-            - {{ state_attr(item_id, 'friendly_name') or item_id }}
-                {% endfor %}
-                {% if items | count > 12 %}
-            ...and {{ (items | count) - 12 }} more.
-                {% endif %}
-              {% endif %}
-            {% endfor %}
+          incident_key: "device-health:__HOUSE__:lighting"
+          house: "__HOUSE__"
+          state: >-
+            {{ 'open' if is_state(
+                'binary_sensor.__HOUSE___long_offline_lights', 'on')
+               else 'recovered' }}
+          severity: "advisory"
+          notify: false
+          title: >-
+            __HOUSE__ {{ 'lights need attention'
+              if is_state('binary_sensor.__HOUSE___long_offline_lights', 'on')
+              else 'lights recovered' }}
+          body: >-
+            {% set items = state_attr(
+                'binary_sensor.__HOUSE___long_offline_lights',
+                'problem_entities') or [] %}
+            {{ (items | count ~ ' light(s) offline for at least 48 hours.')
+               if items | count > 0
+               else 'No individual lights remain offline for 48 hours.' }}
+          entity_ids: >-
+            {{ state_attr(
+                'binary_sensor.__HOUSE___long_offline_lights',
+                'problem_entities') or [] }}
     mode: single
