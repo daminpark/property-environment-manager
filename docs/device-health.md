@@ -59,6 +59,7 @@ rest_command:
       {
         "incident_key": {{ incident_key | to_json }},
         "house": {{ house | to_json }},
+        "incident_kind": {{ incident_kind | default('general', true) | to_json }},
         "state": {{ state | to_json }},
         "observed_at": {{ observed_at | default(now().isoformat(), true) | to_json }},
         "severity": {{ severity | to_json }},
@@ -72,7 +73,12 @@ rest_command:
 ```yaml
 # secrets.yaml
 vbr_ha_webhook_secret: "replace-with-the-same-secret-used-by-tachbrook"
+vbr_device_health_incident_salt: "replace-with-a-long-random-local-value"
 ```
+
+The incident salt is used only by the Zigbee lifecycle automation documented
+in `docs/device-health-events-v1.md`. It must remain stable and inside Home
+Assistant; it is never included in the Tachbrook webhook payload.
 
 Tachbrook must authenticate this endpoint, upsert by `incident_key`, and apply
 owner-only access at both the push and to-do layers. It must not infer owner

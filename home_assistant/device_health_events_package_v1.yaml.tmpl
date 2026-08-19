@@ -163,51 +163,109 @@ automation:
                   - "{{ repeat.item }}"
     mode: single
 
-  - id: "device_health_events_v1___HOUSE___zigbee_leave"
-    alias: "Device Health Events V1 __HOUSE__: Zigbee Device Left"
-    description: "Report a definitive device_leave and open pairing for 120 seconds"
+  - id: "device_health_events_v1___HOUSE___zigbee_lifecycle"
+    alias: "Device Health Events V1 __HOUSE__: Zigbee Device Lifecycle"
+    description: >-
+      Track definitive leave, failed interview, and successful re-pair events
+      with one privacy-preserving incident per device.
     triggers:
       - trigger: mqtt
         topic: zigbee2mqtt/bridge/event
+    variables:
+      incident_salt: !secret vbr_device_health_incident_salt
+      event_type: >-
+        {% set payload = trigger.payload_json
+           if trigger.payload_json is defined
+              and trigger.payload_json is mapping else {} %}
+        {{ payload.get('type', '')
+           | default('', true) | string | trim | lower }}
+      interview_status: >-
+        {% set payload = trigger.payload_json
+           if trigger.payload_json is defined
+              and trigger.payload_json is mapping else {} %}
+        {% set raw_data = payload.get('data', {}) %}
+        {% set data = raw_data if raw_data is mapping else {} %}
+        {{ data.get('status', '')
+           | default('', true) | string | trim | lower }}
+      ieee_address: >-
+        {% set payload = trigger.payload_json
+           if trigger.payload_json is defined
+              and trigger.payload_json is mapping else {} %}
+        {% set raw_data = payload.get('data', {}) %}
+        {% set data = raw_data if raw_data is mapping else {} %}
+        {{ data.get('ieee_address', '')
+           | default('', true) | string | trim | lower }}
     conditions:
       - condition: template
-        value_template: >
-          {% set payload = trigger.payload_json
-              if trigger.payload_json is defined else {} %}
-          {% set data = payload.get('data', {}) %}
-          {{ payload.get('type') == 'device_leave'
-             and data.get('ieee_address', '') | length > 0 }}
+        value_template: >-
+          {{ ieee_address | length > 0
+             and (event_type == 'device_leave'
+                  or (event_type == 'device_interview'
+                      and interview_status in ['failed', 'successful'])) }}
     actions:
       - variables:
-          episode_started: "{{ as_timestamp(now(), 0) | int }}"
-          device_key: >-
-            {{ trigger.payload_json.data.ieee_address | lower
-               | regex_replace('[^a-z0-9._:-]', '-') }}
-          device_name: >-
-            {{ trigger.payload_json.data.friendly_name
-               | default(trigger.payload_json.data.ieee_address, true) }}
-      - action: mqtt.publish
-        continue_on_error: true
-        data:
-          topic: zigbee2mqtt/bridge/request/permit_join
-          payload: '{"value": true, "time": 120}'
-          qos: 0
-          retain: false
-      - action: rest_command.vbr_device_health
-        continue_on_error: true
-        data:
           incident_key: >-
-            device-health:__HOUSE__:zigbee-leave:{{ device_key }}:{{ episode_started }}
-          house: "__HOUSE__"
-          state: "open"
-          severity: "urgent"
-          notify: true
-          title: "__HOUSE__ Zigbee device left"
-          body: >-
-            {{ device_name }} left Zigbee. Pairing is open for 120 seconds.
-          entity_ids: []
+            device-health:__HOUSE__:zigbee:{{
+              (incident_salt ~ ':' ~ ieee_address) | sha256 }}
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: "{{ event_type == 'device_leave' }}"
+            sequence:
+              - action: mqtt.publish
+                continue_on_error: true
+                data:
+                  topic: zigbee2mqtt/bridge/request/permit_join
+                  payload: '{"value": true, "time": 120}'
+                  qos: 0
+                  retain: false
+              - action: rest_command.vbr_device_health
+                data:
+                  incident_key: "{{ incident_key }}"
+                  house: "__HOUSE__"
+                  incident_kind: "zigbee_departure"
+                  state: "open"
+                  severity: "advisory"
+                  notify: true
+                  title: "__HOUSE__ Zigbee device left"
+                  body: "A Zigbee device left. Pairing is open for 120 seconds."
+                  entity_ids: []
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ event_type == 'device_interview'
+                     and interview_status == 'failed' }}
+            sequence:
+              - action: rest_command.vbr_device_health
+                data:
+                  incident_key: "{{ incident_key }}"
+                  house: "__HOUSE__"
+                  incident_kind: "zigbee_pairing_failed"
+                  state: "open"
+                  severity: "urgent"
+                  notify: true
+                  title: "__HOUSE__ Zigbee re-pair failed"
+                  body: "The Zigbee device could not be re-paired."
+                  entity_ids: []
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ event_type == 'device_interview'
+                     and interview_status == 'successful' }}
+            sequence:
+              - action: rest_command.vbr_device_health
+                data:
+                  incident_key: "{{ incident_key }}"
+                  house: "__HOUSE__"
+                  incident_kind: "zigbee_departure"
+                  state: "recovered"
+                  severity: "advisory"
+                  notify: false
+                  title: "__HOUSE__ Zigbee device re-paired"
+                  body: "The Zigbee device rejoined the network."
+                  entity_ids: []
     mode: queued
-    max: 10
+    max: 20
 
   - id: "device_health_events_v1___HOUSE___fan_humidity_stale"
     alias: "Device Health Events V1 __HOUSE__: Running Fan Humidity Stale"

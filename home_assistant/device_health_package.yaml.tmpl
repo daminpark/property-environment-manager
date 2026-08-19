@@ -64,12 +64,29 @@ template:
         icon: mdi:lightbulb-alert
         state: >
           {% set bad = ['unavailable', 'unknown'] %}
+          {% set z2m = namespace(entities=[]) %}
+          {% for mqtt_entity in integration_entities('mqtt') %}
+            {% set device = device_id(mqtt_entity) %}
+            {% if device and device_attr(device, 'identifiers') %}
+              {% set matched = namespace(value=false) %}
+              {% for ids in device_attr(device, 'identifiers') %}
+                {% if ids | length == 2 and ids[0] == 'mqtt'
+                      and 'zigbee2mqtt' in (ids[1] | string | lower) %}
+                  {% set matched.value = true %}
+                {% endif %}
+              {% endfor %}
+              {% if matched.value %}
+                {% set z2m.entities = z2m.entities + device_entities(device) %}
+              {% endif %}
+            {% endif %}
+          {% endfor %}
           {% set ns = namespace(items=[]) %}
           {% for item in states.light %}
             {% if item.entity_id.startswith('light.__HOUSE___')
                   and not item.entity_id.endswith('_lights')
                   and not item.entity_id.endswith('_lamps')
                   and item.attributes.entity_id is not defined
+                  and item.entity_id not in z2m.entities
                   and item.state in bad
                   and as_timestamp(now())
                       - as_timestamp(item.last_changed, 0) >= 172800 %}
@@ -80,12 +97,29 @@ template:
         attributes:
           problem_entities: >
             {% set bad = ['unavailable', 'unknown'] %}
+            {% set z2m = namespace(entities=[]) %}
+            {% for mqtt_entity in integration_entities('mqtt') %}
+              {% set device = device_id(mqtt_entity) %}
+              {% if device and device_attr(device, 'identifiers') %}
+                {% set matched = namespace(value=false) %}
+                {% for ids in device_attr(device, 'identifiers') %}
+                  {% if ids | length == 2 and ids[0] == 'mqtt'
+                        and 'zigbee2mqtt' in (ids[1] | string | lower) %}
+                    {% set matched.value = true %}
+                  {% endif %}
+                {% endfor %}
+                {% if matched.value %}
+                  {% set z2m.entities = z2m.entities + device_entities(device) %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
             {% set ns = namespace(items=[]) %}
             {% for item in states.light %}
               {% if item.entity_id.startswith('light.__HOUSE___')
                     and not item.entity_id.endswith('_lights')
                     and not item.entity_id.endswith('_lamps')
                     and item.attributes.entity_id is not defined
+                    and item.entity_id not in z2m.entities
                     and item.state in bad
                     and as_timestamp(now())
                         - as_timestamp(item.last_changed, 0) >= 172800 %}

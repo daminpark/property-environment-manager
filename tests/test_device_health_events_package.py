@@ -32,7 +32,7 @@ def test_v1_renders_only_structured_owner_incidents(house: str) -> None:
     assert "__HOUSE__" not in rendered
     assert "notify.notify" not in rendered
     assert "rest_command.vbr_system_task" not in rendered
-    assert rendered.count("action: rest_command.vbr_device_health") == 6
+    assert rendered.count("action: rest_command.vbr_device_health") == 8
     assert rendered.count(f"device-health:{house}:") == 6
     assert set(re.findall(r'^\s+state: "(open|recovered)"$', rendered, re.MULTILINE)) == {
         "open",
@@ -45,7 +45,7 @@ def test_v1_renders_only_structured_owner_incidents(house: str) -> None:
 
     representative_keys = (
         f"device-health:{house}:water-leak:binary_sensor.{house}_a_leak_water_leak:1783700000",
-        f"device-health:{house}:zigbee-leave:0xa4c1381234567890:1783700000",
+        f"device-health:{house}:zigbee:{'a' * 64}",
         f"device-health:{house}:fan-humidity-stale",
         f"device-health:{house}:fan-long-run:a",
     )
@@ -82,26 +82,38 @@ def test_water_leaks_are_immediate_unique_durable_episodes(house: str) -> None:
 
 
 @pytest.mark.parametrize("house", ["193", "195"])
-def test_device_leave_is_definitive_and_keeps_pairing_window(house: str) -> None:
+def test_zigbee_lifecycle_is_private_stable_and_keeps_pairing_window(
+    house: str,
+) -> None:
     rendered = render(house)
-    leave = automation(rendered, f"device_health_events_v1_{house}_zigbee_leave")
+    lifecycle = automation(
+        rendered, f"device_health_events_v1_{house}_zigbee_lifecycle"
+    )
 
-    assert "zigbee2mqtt/bridge/event" in leave
-    assert "payload.get('type') == 'device_leave'" in leave
-    assert "data.get('ieee_address', '')" in leave
-    assert "regex_replace('[^a-z0-9._:-]', '-')" in leave
-    assert (
-        f"device-health:{house}:zigbee-leave:{{{{ device_key }}}}:"
-        "{{ episode_started }}"
-    ) in leave
-    assert "as_timestamp(now(), 0) | int" in leave
-    assert "zigbee2mqtt/bridge/request/permit_join" in leave
-    assert "{\"value\": true, \"time\": 120}" in leave
-    assert leave.index("action: mqtt.publish") < leave.index(
+    assert "zigbee2mqtt/bridge/event" in lifecycle
+    assert "event_type == 'device_leave'" in lifecycle
+    assert "interview_status == 'failed'" in lifecycle
+    assert "interview_status == 'successful'" in lifecycle
+    assert "vbr_device_health_incident_salt" in lifecycle
+    assert "(incident_salt ~ ':' ~ ieee_address) | sha256" in lifecycle
+    assert f"device-health:{house}:zigbee:" in lifecycle
+    assert lifecycle.count('incident_key: "{{ incident_key }}"') == 3
+    assert "zigbee2mqtt/bridge/request/permit_join" in lifecycle
+    assert "{\"value\": true, \"time\": 120}" in lifecycle
+    assert lifecycle.index("action: mqtt.publish") < lifecycle.index(
         "action: rest_command.vbr_device_health"
     )
-    assert 'severity: "urgent"' in leave
-    assert "notify: true" in leave
+    assert 'state: "open"' in lifecycle
+    assert 'state: "recovered"' in lifecycle
+    assert 'severity: "urgent"' in lifecycle
+    assert 'severity: "advisory"' in lifecycle
+    assert lifecycle.count("notify: true") == 2
+    assert lifecycle.count("notify: false") == 1
+    assert lifecycle.count("entity_ids: []") == 3
+    assert lifecycle.count('incident_kind: "zigbee_departure"') == 2
+    assert lifecycle.count('incident_kind: "zigbee_pairing_failed"') == 1
+    assert "device_name" not in lifecycle
+    assert "friendly_name" not in lifecycle
 
 
 @pytest.mark.parametrize("house", ["193", "195"])
