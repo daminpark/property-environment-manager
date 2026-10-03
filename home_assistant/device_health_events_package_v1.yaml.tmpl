@@ -284,7 +284,9 @@ automation:
                   state: "open"
                   severity: "advisory"
                   notify: true
-                  title: "__HOUSE__ Zigbee device left"
+                  title: >-
+                    {{ '__HOUSE__ Zigbee device left: ' ~ device_name if device_name
+                       else '__HOUSE__ Zigbee device left' }}
                   body: >-
                     {{ device_name if device_name else 'A Zigbee device' }}
                     left the Zigbee network. It powered on {{ power_ons }}
@@ -305,7 +307,9 @@ automation:
                   state: "open"
                   severity: "urgent"
                   notify: true
-                  title: "__HOUSE__ Zigbee re-pair failed"
+                  title: >-
+                    {{ '__HOUSE__ Zigbee re-pair failed: ' ~ device_name if device_name
+                       else '__HOUSE__ Zigbee re-pair failed' }}
                   body: >-
                     {{ device_name if device_name else 'The Zigbee device' }}
                     could not be re-paired.
@@ -324,7 +328,9 @@ automation:
                   state: "recovered"
                   severity: "advisory"
                   notify: false
-                  title: "__HOUSE__ Zigbee device re-paired"
+                  title: >-
+                    {{ '__HOUSE__ Zigbee device re-paired: ' ~ device_name if device_name
+                       else '__HOUSE__ Zigbee device re-paired' }}
                   body: >-
                     {{ device_name if device_name else 'The Zigbee device' }}
                     rejoined the network.

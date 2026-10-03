@@ -117,6 +117,7 @@ def test_zigbee_lifecycle_is_private_stable_and_keeps_pairing_window(
     # stays local: it only feeds the salted key and the power-on lookup.
     assert "data.get('friendly_name', '')" in lifecycle
     assert "{{ device_name if device_name else 'A Zigbee device' }}" in lifecycle
+    assert f"'{house} Zigbee device left: ' ~ device_name if device_name" in lifecycle
     assert "It powered on {{ power_ons }}" in lifecycle
     assert f"state_attr('sensor.{house}_zigbee_power_ons_v1', 'recent')" in lifecycle
     for body in re.findall(r"body: >-\n((?:\s{20}.*\n)+)", lifecycle):
