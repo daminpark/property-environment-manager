@@ -6,6 +6,48 @@
 # battery_monitor package already creates VBR system tasks for those devices.
 
 template:
+  # Every time a Zigbee device gets power it announces itself. Keep the last
+  # 10 minutes of announcements per device (by IEEE address, local only) so a
+  # departure can say how often it was power-cycled just before leaving: bulbs
+  # factory-reset after a few quick off/on cycles at the wall switch.
+  - triggers:
+      - trigger: mqtt
+        topic: zigbee2mqtt/bridge/event
+    sensor:
+      - name: "__HOUSE__ Zigbee Power-ons V1"
+        unique_id: "device_health_events_v1___HOUSE___zigbee_power_ons"
+        icon: mdi:power-cycle
+        state: >-
+          {% set payload = trigger.payload_json
+             if trigger.payload_json is defined
+                and trigger.payload_json is mapping else {} %}
+          {{ payload.get('type', 'unknown') | default('unknown', true) | string | trim | lower }}
+        attributes:
+          recent: >-
+            {% set payload = trigger.payload_json
+               if trigger.payload_json is defined
+                  and trigger.payload_json is mapping else {} %}
+            {% set raw_data = payload.get('data', {}) %}
+            {% set data = raw_data if raw_data is mapping else {} %}
+            {% set previous = this.attributes.get('recent', {})
+               if this is defined and this.attributes is defined
+                  and this.attributes.get('recent') is mapping else {} %}
+            {% set cutoff = as_timestamp(now()) - 600 %}
+            {% set ns = namespace(out={}) %}
+            {% for key, stamps in previous.items() %}
+              {% set kept = stamps | select('number') | select('>', cutoff) | list %}
+              {% if kept | count > 0 %}
+                {% set ns.out = dict(ns.out, **{key: kept}) %}
+              {% endif %}
+            {% endfor %}
+            {% set ieee = data.get('ieee_address', '')
+               | default('', true) | string | trim | lower %}
+            {% if payload.get('type', '') == 'device_announce' and ieee | length > 0 %}
+              {% set ns.out = dict(ns.out, **{ieee: ns.out.get(ieee, [])
+                 + [as_timestamp(now()) | round(0)]}) %}
+            {% endif %}
+            {{ ns.out }}
+
   - triggers:
       - trigger: homeassistant
         event: start
@@ -195,6 +237,21 @@ automation:
         {% set data = raw_data if raw_data is mapping else {} %}
         {{ data.get('ieee_address', '')
            | default('', true) | string | trim | lower }}
+      device_name: >-
+        {% set payload = trigger.payload_json
+           if trigger.payload_json is defined
+              and trigger.payload_json is mapping else {} %}
+        {% set raw_data = payload.get('data', {}) %}
+        {% set data = raw_data if raw_data is mapping else {} %}
+        {% set name = data.get('friendly_name', '')
+           | default('', true) | string | trim %}
+        {{ '' if name | lower == ieee_address else name }}
+      power_ons: >-
+        {% set recent = state_attr('sensor.__HOUSE___zigbee_power_ons_v1', 'recent') %}
+        {% set stamps = recent.get(ieee_address, [])
+           if recent is mapping else [] %}
+        {{ stamps | select('number')
+           | select('>', as_timestamp(now()) - 600) | list | count }}
     conditions:
       - condition: template
         value_template: >-
@@ -228,7 +285,11 @@ automation:
                   severity: "advisory"
                   notify: true
                   title: "__HOUSE__ Zigbee device left"
-                  body: "A Zigbee device left. Pairing is open for 120 seconds."
+                  body: >-
+                    {{ device_name if device_name else 'A Zigbee device' }}
+                    left the Zigbee network. It powered on {{ power_ons }}
+                    time{{ '' if power_ons | int == 1 else 's' }} in the 10
+                    minutes before. Pairing is open for 120 seconds.
                   entity_ids: []
           - conditions:
               - condition: template
@@ -245,7 +306,9 @@ automation:
                   severity: "urgent"
                   notify: true
                   title: "__HOUSE__ Zigbee re-pair failed"
-                  body: "The Zigbee device could not be re-paired."
+                  body: >-
+                    {{ device_name if device_name else 'The Zigbee device' }}
+                    could not be re-paired.
                   entity_ids: []
           - conditions:
               - condition: template
@@ -262,7 +325,9 @@ automation:
                   severity: "advisory"
                   notify: false
                   title: "__HOUSE__ Zigbee device re-paired"
-                  body: "The Zigbee device rejoined the network."
+                  body: >-
+                    {{ device_name if device_name else 'The Zigbee device' }}
+                    rejoined the network.
                   entity_ids: []
     mode: queued
     max: 20

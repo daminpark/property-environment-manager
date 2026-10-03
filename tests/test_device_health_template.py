@@ -82,9 +82,10 @@ def test_zigbee_event_fields_guard_missing_or_malformed_data() -> None:
         "device_health_events_v1___HOUSE___zigbee_lifecycle",
     )
 
-    assert lifecycle.count("trigger.payload_json is defined") == 3
-    assert lifecycle.count("trigger.payload_json is mapping") == 3
-    assert lifecycle.count("raw_data if raw_data is mapping else {}") == 2
+    assert lifecycle.count("trigger.payload_json is defined") == 4
+    assert lifecycle.count("trigger.payload_json is mapping") == 4
+    assert lifecycle.count("raw_data if raw_data is mapping else {}") == 3
+    assert "recent is mapping else []" in lifecycle
     assert "trigger.payload_json.type" not in lifecycle
     assert "trigger.payload_json.data" not in lifecycle
     assert "ieee_address | length > 0" in lifecycle
@@ -130,10 +131,13 @@ def test_zigbee_webhook_fields_are_structured_and_privacy_preserving() -> None:
         assert data["incident_key"] == "{{ incident_key }}"
         assert data["entity_ids"] == []
         serialized = repr(data)
+        # The readable message names the device (its Zigbee2MQTT friendly
+        # name) so the owner knows which one left; the IEEE address and the
+        # salt never leave Home Assistant, and no entity ids are sent.
         assert "ieee_address" not in serialized
         assert "incident_salt" not in serialized
         assert "friendly_name" not in serialized
-        assert "device_name" not in serialized
+        assert "device_name" in data["body"]
         assert "entity_id" not in serialized.replace("entity_ids", "")
 
 

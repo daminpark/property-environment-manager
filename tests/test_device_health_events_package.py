@@ -112,8 +112,15 @@ def test_zigbee_lifecycle_is_private_stable_and_keeps_pairing_window(
     assert lifecycle.count("entity_ids: []") == 3
     assert lifecycle.count('incident_kind: "zigbee_departure"') == 2
     assert lifecycle.count('incident_kind: "zigbee_pairing_failed"') == 1
-    assert "device_name" not in lifecycle
-    assert "friendly_name" not in lifecycle
+    # The owner sees which device left and how often it was power-cycled
+    # first (bulbs reset after a few quick off/on cycles). The IEEE address
+    # stays local: it only feeds the salted key and the power-on lookup.
+    assert "data.get('friendly_name', '')" in lifecycle
+    assert "{{ device_name if device_name else 'A Zigbee device' }}" in lifecycle
+    assert "It powered on {{ power_ons }}" in lifecycle
+    assert f"state_attr('sensor.{house}_zigbee_power_ons_v1', 'recent')" in lifecycle
+    for body in re.findall(r"body: >-\n((?:\s{20}.*\n)+)", lifecycle):
+        assert "ieee" not in body
 
 
 @pytest.mark.parametrize("house", ["193", "195"])
@@ -170,3 +177,16 @@ def test_v1_automation_ids_are_unique_and_battery_is_not_duplicated() -> None:
     assert "_battery" not in TEMPLATE
     assert "battery_low" not in TEMPLATE
     assert "rest_command.vbr_system_task" not in TEMPLATE
+
+
+@pytest.mark.parametrize("house", ["193", "195"])
+def test_power_on_announcements_are_kept_for_ten_minutes_per_device(house: str) -> None:
+    rendered = render(house)
+    start = rendered.index(f"{house} Zigbee Power-ons V1")
+    sensor = rendered[start:rendered.index("  - triggers:", start)]
+    assert rendered.index("topic: zigbee2mqtt/bridge/event") < start
+    assert f'unique_id: "device_health_events_v1_{house}_zigbee_power_ons"' in sensor
+    assert "payload.get('type', '') == 'device_announce'" in sensor
+    assert "as_timestamp(now()) - 600" in sensor
+    assert "this.attributes.get('recent', {})" in sensor
+    assert "rest_command" not in sensor and "notify" not in sensor

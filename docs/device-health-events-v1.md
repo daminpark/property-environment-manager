@@ -11,7 +11,7 @@ contract documented in `docs/device-health.md`; it never calls
 | Event | Delay | Owner result | Recovery |
 | --- | ---: | --- | --- |
 | A or B water sensor reports an actual leak | None | Urgent push and durable owner task | Manual; each leak is a separate episode |
-| Zigbee2MQTT emits `device_leave` with an IEEE address | None | Owner push and one durable task for that device; pairing opens for 120 seconds | A successful interview closes the same task quietly |
+| Zigbee2MQTT emits `device_leave` with an IEEE address | None | Owner push and one durable task for that device, named by its Zigbee2MQTT friendly name and saying how many times it powered on in the 10 minutes before; pairing opens for 120 seconds | A successful interview closes the same task quietly |
 | Zigbee2MQTT reports a failed device interview | None | Urgent owner push and update to that device's task | A successful interview closes the same task quietly |
 | A/B/C/K humidity reading is stale while its fan runs | 60 minutes | One grouped owner task, no push | Task closes when all affected sensors report or their fans stop |
 | A/B/C/K fan runs continuously | 120 minutes | One owner task per fan, no push | That fan's task closes when it turns off |
@@ -25,9 +25,19 @@ Zigbee lifecycle keys use a stable SHA-256 token derived locally from the
 normalized IEEE address and `vbr_device_health_incident_salt`. Leave, failed
 interview, and successful interview events for one device therefore use the
 same key, while simultaneous incidents for different devices remain isolated.
-Only that opaque token leaves Home Assistant. The raw IEEE address, salt,
-device name, and entity IDs remain local, and the webhook always receives an
-empty `entity_ids` list for these events. The structured `incident_kind` field
+The readable message also carries the device's Zigbee2MQTT friendly name
+(for example `195.3.light.5`) and how many times it announced itself — that
+is, powered on — in the 10 minutes before it left, so the owner can see which
+device unpaired and whether it was power-cycled first (many bulbs factory-reset
+after a few quick off/on cycles at the wall switch). The owner chose this on
+2026-10-03. The raw IEEE address, salt and entity IDs remain local, and the
+webhook always receives an empty `entity_ids` list for these events.
+
+Power-ons come from `sensor.__HOUSE___zigbee_power_ons_v1`, a trigger-based
+template sensor on `zigbee2mqtt/bridge/event` that keeps each device's
+`device_announce` timestamps for 10 minutes in its `recent` attribute (keyed
+by IEEE address, inside Home Assistant only). A device that leaves after a
+long time powered on reports 0. The structured `incident_kind` field
 distinguishes departure and pairing-failure phases without exporting device
 identity. Do not rotate the salt while Zigbee incidents are open, because doing
 so changes their keys.
